@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Integer, String, Text, create_engine
+from sqlalchemy import Column, DateTime, String, Text, create_engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 DATABASE_URL = "sqlite:///./agent_sandbox.db"
@@ -25,6 +25,8 @@ class RunRow(Base):
     actions = Column(Text, nullable=False, default="[]")
     diffs = Column(Text, nullable=False, default="[]")
     approval = Column(Text, nullable=True)
+    risk_report = Column(Text, nullable=True)
+    policy_violations = Column(Text, nullable=True, default="[]")
     error = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
 
@@ -46,6 +48,8 @@ class RunStore:
                 actions=json.dumps(run["actions"], default=str),
                 diffs=json.dumps(run.get("diffs", []), default=str),
                 approval=json.dumps(run["approval"], default=str) if run.get("approval") else None,
+                risk_report=json.dumps(run.get("risk_report"), default=str) if run.get("risk_report") else None,
+                policy_violations=json.dumps(run.get("policy_violations", []), default=str),
                 error=run.get("error"),
                 created_at=datetime.fromisoformat(run["created_at"]) if isinstance(run["created_at"], str) else run["created_at"],
             )
@@ -55,6 +59,8 @@ class RunStore:
             row.actions = json.dumps(run["actions"], default=str)
             row.diffs = json.dumps(run.get("diffs", []), default=str)
             row.approval = json.dumps(run["approval"], default=str) if run.get("approval") else None
+            row.risk_report = json.dumps(run.get("risk_report"), default=str) if run.get("risk_report") else None
+            row.policy_violations = json.dumps(run.get("policy_violations", []), default=str)
             row.error = run.get("error")
         self.session.commit()
 
@@ -78,6 +84,8 @@ class RunStore:
             "actions": json.loads(row.actions),
             "diffs": json.loads(row.diffs),
             "approval": json.loads(row.approval) if row.approval else None,
+            "risk_report": json.loads(row.risk_report) if row.risk_report else None,
+            "policy_violations": json.loads(row.policy_violations) if row.policy_violations else [],
             "error": row.error,
             "created_at": row.created_at.isoformat() if row.created_at else None,
         }

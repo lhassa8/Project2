@@ -2,6 +2,7 @@
 
 Implements the tool-call loop directly using the Anthropic Python SDK.
 Every tool call is routed to mock_tools instead of real systems.
+Integrates risk scoring and policy enforcement in real-time.
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ import anthropic
 
 from ..models import AgentAction, AgentDefinition, RunContext, SandboxRun, StateDiff
 from .mock_tools import TOOL_REGISTRY, TOOL_SCHEMAS
+from .policy_engine import PolicyEngine
+from .risk_engine import score_action, score_run
 
 
 def _now() -> datetime:
@@ -32,6 +35,8 @@ class SandboxRunner:
         self._enabled_tools: set[str] = {
             t.name for t in run.agent_definition.tools if t.enabled
         }
+        self.policy_engine = PolicyEngine()
+        self.policy_violations: list[dict] = []
 
     def _tool_schemas(self) -> list[dict]:
         return [s for s in TOOL_SCHEMAS if s["name"] in self._enabled_tools]
@@ -75,8 +80,11 @@ class SandboxRunner:
             return {"error": f"Unknown tool: {name}"}, []
         return fn(**args)
 
-    async def run_agent(self) -> AsyncIterator[AgentAction]:
-        """Execute the agent loop, yielding each action as it happens."""
+    async def run_agent(self) -> AsyncIterator[AgentAction | dict]:
+        """Execute the agent loop, yielding each action as it happens.
+
+        May also yield policy violation dicts with type='policy_violation'.
+        """
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": self.run.agent_definition.goal}
         ]
@@ -133,6 +141,29 @@ class SandboxRunner:
                     tool_name = tool_block.name
                     tool_args = tool_block.input if isinstance(tool_block.input, dict) else {}
 
+                    # ── Policy check ──
+                    violations = self.policy_engine.evaluate(
+                        tool_name, tool_args, self.sequence + 1
+                    )
+                    if violations:
+                        for v in violations:
+                            self.policy_violations.append(v.to_dict())
+                            yield {"type": "policy_violation", "violation": v.to_dict()}
+
+                        if self.policy_engine.has_blockers(violations):
+                            blocker = next(
+                                v for v in violations
+                                if v.policy_action.value == "block"
+                            )
+                            self.run.status = "failed"
+                            self.run.error = f"Policy blocked: {blocker.description}"
+                            action = self._add_action(
+                                "final_output",
+                                {"error": self.run.error, "policy_violation": blocker.to_dict()},
+                            )
+                            yield action
+                            return
+
                     # Record the tool call
                     call_action = self._add_action(
                         "tool_call",
@@ -166,6 +197,15 @@ class SandboxRunner:
                 messages.append({"role": "user", "content": tool_results})
 
             self.run.status = "complete"
+
+            # ── Compute risk report at end of run ──
+            actions_dicts = [a.model_dump(mode="json") for a in self.run.actions]
+            diffs_dicts = [d.model_dump(mode="json") for d in self.run.diffs]
+            risk_report = score_run(actions_dicts, diffs_dicts)
+            yield {
+                "type": "risk_report",
+                "report": risk_report.to_dict(),
+            }
 
         except Exception as e:
             self.run.status = "failed"

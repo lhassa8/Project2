@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
@@ -17,6 +18,7 @@ from ..models import (
     SandboxRun,
 )
 from ..services.sandbox_runner import SandboxRunner
+from ..services.risk_engine import score_run
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -48,7 +50,7 @@ async def create_run(req: CreateRunRequest, db: Session = Depends(get_db)) -> di
     store = RunStore(db)
 
     # Save initial state
-    store.save(run.model_dump())
+    store.save(run.model_dump(mode="json"))
 
     # Run the agent in the background
     asyncio.create_task(_execute_run(run, store))
@@ -58,22 +60,42 @@ async def create_run(req: CreateRunRequest, db: Session = Depends(get_db)) -> di
 
 async def _execute_run(run: SandboxRun, store: RunStore) -> None:
     runner = SandboxRunner(run)
-    async for action in runner.run_agent():
-        # Broadcast to any WebSocket listeners
-        await _broadcast(run.id, {
-            "type": "action",
-            "action": action.model_dump(mode="json"),
-        })
-        # Persist after each action
-        store.save(run.model_dump(mode="json"))
+    risk_report = None
+    policy_violations = []
+
+    async for event in runner.run_agent():
+        if isinstance(event, dict):
+            # Non-action events (risk report, policy violations)
+            if event.get("type") == "risk_report":
+                risk_report = event["report"]
+                await _broadcast(run.id, event)
+            elif event.get("type") == "policy_violation":
+                policy_violations.append(event["violation"])
+                await _broadcast(run.id, event)
+        else:
+            # Regular AgentAction
+            await _broadcast(run.id, {
+                "type": "action",
+                "action": event.model_dump(mode="json"),
+            })
+        # Persist after each event
+        run_data = run.model_dump(mode="json")
+        run_data["risk_report"] = risk_report
+        run_data["policy_violations"] = policy_violations
+        store.save(run_data)
 
     # Final broadcast
     await _broadcast(run.id, {
         "type": "run_complete",
         "status": run.status,
         "error": run.error,
+        "risk_report": risk_report,
+        "policy_violations": policy_violations,
     })
-    store.save(run.model_dump(mode="json"))
+    run_data = run.model_dump(mode="json")
+    run_data["risk_report"] = risk_report
+    run_data["policy_violations"] = policy_violations
+    store.save(run_data)
 
 
 @router.get("")
@@ -115,6 +137,35 @@ def approve_run(
     return run_data["approval"]
 
 
+@router.get("/{run_id}/export")
+def export_run(run_id: str, db: Session = Depends(get_db)) -> dict:
+    """Export a full audit artifact for a run — suitable for compliance storage."""
+    run_data = RunStore(db).get(run_id)
+    if run_data is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    # Recompute risk report for export
+    risk_report = score_run(
+        run_data.get("actions", []),
+        run_data.get("diffs", []),
+    )
+
+    return {
+        "export_version": "1.0",
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "run": run_data,
+        "risk_report": risk_report.to_dict(),
+        "audit_metadata": {
+            "tool_count": sum(1 for a in run_data.get("actions", []) if a.get("action_type") == "tool_call"),
+            "systems_touched": list(set(
+                d.get("system", "unknown") for d in run_data.get("diffs", [])
+            )),
+            "has_approval": run_data.get("approval") is not None,
+            "approval_decision": run_data.get("approval", {}).get("decision") if run_data.get("approval") else None,
+        },
+    }
+
+
 # ── WebSocket endpoint ───────────────────────────────────────────────────────
 
 @router.websocket("/{run_id}/ws")
@@ -124,7 +175,6 @@ async def run_websocket(websocket: WebSocket, run_id: str):
     _ws_connections.setdefault(run_id, []).append(websocket)
     try:
         while True:
-            # Keep connection alive; client can send pings
             await websocket.receive_text()
     except WebSocketDisconnect:
         pass
