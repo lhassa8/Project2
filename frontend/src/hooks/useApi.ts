@@ -1,7 +1,32 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AgentAction, Analytics, PolicyConfig, SandboxRun, Template, TemplateDetail } from '../types';
+import type {
+  AgentAction,
+  Analytics,
+  PolicyConfig,
+  RunComparison,
+  SandboxRun,
+  Template,
+  TemplateDetail,
+  Workspace,
+} from '../types';
 
 const API = '/api/runs';
+
+// ── Shared headers (API key support) ──────────────────────────────────────
+
+function getHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const apiKey = localStorage.getItem('agent_sandbox_api_key');
+  if (apiKey) headers['X-API-Key'] = apiKey;
+  return headers;
+}
+
+function authFetch(url: string, opts: RequestInit = {}): Promise<Response> {
+  const headers = { ...getHeaders(), ...opts.headers };
+  return fetch(url, { ...opts, headers });
+}
+
+// ── Runs ──────────────────────────────────────────────────────────────────
 
 export function useRuns() {
   const [runs, setRuns] = useState<SandboxRun[]>([]);
@@ -9,7 +34,7 @@ export function useRuns() {
 
   const fetchRuns = useCallback(async () => {
     setLoading(true);
-    const res = await fetch(API);
+    const res = await authFetch(API);
     setRuns(await res.json());
     setLoading(false);
   }, []);
@@ -26,7 +51,7 @@ export function useRun(runId: string | null) {
   const fetchRun = useCallback(async () => {
     if (!runId) return;
     setLoading(true);
-    const res = await fetch(`${API}/${runId}`);
+    const res = await authFetch(`${API}/${runId}`);
     if (res.ok) setRun(await res.json());
     setLoading(false);
   }, [runId]);
@@ -80,11 +105,10 @@ export function useRunStream(runId: string | null) {
 
 export async function createRun(body: {
   agent_definition: { name: string; goal: string; tools: { name: string; enabled: boolean }[]; model: string; max_tokens: number; temperature: number };
-  run_context: { user_persona: string; initial_state: Record<string, unknown> };
+  run_context: { user_persona: string; initial_state: Record<string, unknown>; environment?: { filesystem: Record<string, string>; database: Record<string, Record<string, unknown>[]>; http_stubs: unknown[] } };
 }) {
-  const res = await fetch(API, {
+  const res = await authFetch(API, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   return res.json();
@@ -95,16 +119,35 @@ export async function submitApproval(
   decision: 'approved' | 'changes_requested' | 'rejected',
   notes: string,
 ) {
-  const res = await fetch(`${API}/${runId}/approve`, {
+  const res = await authFetch(`${API}/${runId}/approve`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ decision, reviewer_notes: notes }),
   });
   return res.json();
 }
 
 export async function exportRun(runId: string) {
-  const res = await fetch(`${API}/${runId}/export`);
+  const res = await authFetch(`${API}/${runId}/export`);
+  return res.json();
+}
+
+// ── Comparison ──────────────────────────────────────────────────────────────
+
+export async function compareRuns(runIdA: string, runIdB: string): Promise<RunComparison> {
+  const res = await authFetch(`${API}/compare`, {
+    method: 'POST',
+    body: JSON.stringify({ run_id_a: runIdA, run_id_b: runIdB }),
+  });
+  return res.json();
+}
+
+// ── Replay ──────────────────────────────────────────────────────────────────
+
+export async function replayRun(runId: string, target: 'sandbox' | 'live' = 'sandbox', environmentOverrides?: Record<string, unknown>) {
+  const res = await authFetch(`${API}/${runId}/replay`, {
+    method: 'POST',
+    body: JSON.stringify({ target, environment_overrides: environmentOverrides || {} }),
+  });
   return res.json();
 }
 
@@ -115,7 +158,7 @@ export function useTemplates() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/api/templates')
+    authFetch('/api/templates')
       .then(r => r.json())
       .then(data => { setTemplates(data); setLoading(false); })
       .catch(() => setLoading(false));
@@ -125,7 +168,7 @@ export function useTemplates() {
 }
 
 export async function getTemplateDetail(templateId: string): Promise<TemplateDetail> {
-  const res = await fetch(`/api/templates/${templateId}`);
+  const res = await authFetch(`/api/templates/${templateId}`);
   return res.json();
 }
 
@@ -137,7 +180,7 @@ export function useAnalytics() {
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    const res = await fetch('/api/analytics');
+    const res = await authFetch('/api/analytics');
     setData(await res.json());
     setLoading(false);
   }, []);
@@ -154,11 +197,48 @@ export function usePolicies() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/api/policies')
+    authFetch('/api/policies')
       .then(r => r.json())
       .then(data => { setPolicies(data); setLoading(false); })
       .catch(() => setLoading(false));
   }, []);
 
   return { policies, loading };
+}
+
+// ── Workspace ──────────────────────────────────────────────────────────────
+
+export function useWorkspace() {
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    authFetch('/api/workspaces/me')
+      .then(r => r.json())
+      .then(data => { setWorkspace(data); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, []);
+
+  return { workspace, loading };
+}
+
+export async function createWorkspace(name: string) {
+  const res = await authFetch('/api/workspaces', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+  return res.json();
+}
+
+export async function createApiKey(name: string, role: string = 'admin') {
+  const res = await authFetch('/api/workspaces/api-keys', {
+    method: 'POST',
+    body: JSON.stringify({ name, role }),
+  });
+  return res.json();
+}
+
+export async function listApiKeys(): Promise<{ key: string; name: string; role: string }[]> {
+  const res = await authFetch('/api/workspaces/api-keys');
+  return res.json();
 }

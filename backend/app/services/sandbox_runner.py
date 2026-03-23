@@ -1,7 +1,7 @@
 """Sandbox Runner — executes a Claude agent with intercepted tool calls.
 
 Implements the tool-call loop directly using the Anthropic Python SDK.
-Every tool call is routed to mock_tools instead of real systems.
+Every tool call is routed through a SandboxEnvironment instead of real systems.
 Integrates risk scoring and policy enforcement in real-time.
 """
 
@@ -16,9 +16,10 @@ from typing import Any, AsyncIterator
 import anthropic
 
 from ..models import AgentAction, AgentDefinition, RunContext, SandboxRun, StateDiff
-from .mock_tools import TOOL_REGISTRY, TOOL_SCHEMAS
+from .mock_tools import TOOL_SCHEMAS
 from .policy_engine import PolicyEngine
 from .risk_engine import score_action, score_run
+from .sandbox_environment import SandboxEnvironment
 
 
 def _now() -> datetime:
@@ -28,7 +29,7 @@ def _now() -> datetime:
 class SandboxRunner:
     """Runs a Claude agent in a sandboxed environment."""
 
-    def __init__(self, run: SandboxRun):
+    def __init__(self, run: SandboxRun, environment: SandboxEnvironment | None = None):
         self.run = run
         self.client = anthropic.Anthropic()
         self.sequence = 0
@@ -37,6 +38,15 @@ class SandboxRunner:
         }
         self.policy_engine = PolicyEngine()
         self.policy_violations: list[dict] = []
+
+        # Build environment from run context config or use provided
+        if environment is not None:
+            self.env = environment
+        else:
+            env_config = run.run_context.environment.model_dump() if hasattr(run.run_context, 'environment') else {}
+            self.env = SandboxEnvironment(env_config if env_config.get("filesystem") or env_config.get("database") or env_config.get("http_stubs") else None)
+
+        self.initial_snapshot = self.env.to_snapshot()
 
     def _tool_schemas(self) -> list[dict]:
         return [s for s in TOOL_SCHEMAS if s["name"] in self._enabled_tools]
@@ -75,10 +85,19 @@ class SandboxRunner:
         return "\n\n".join(parts)
 
     def _execute_tool(self, name: str, args: dict) -> tuple[dict, list[StateDiff]]:
-        fn = TOOL_REGISTRY.get(name)
-        if fn is None:
+        """Route tool calls through the sandbox environment."""
+        if name == "read_file":
+            return self.env.read_file(args.get("path", ""))
+        elif name == "write_file":
+            return self.env.write_file(args.get("path", ""), args.get("content", ""))
+        elif name == "send_email":
+            return self.env.send_email(args.get("to", ""), args.get("subject", ""), args.get("body", ""))
+        elif name == "http_request":
+            return self.env.http_request(args.get("method", "GET"), args.get("url", ""), args.get("body"))
+        elif name == "query_database":
+            return self.env.query_database(args.get("query", ""))
+        else:
             return {"error": f"Unknown tool: {name}"}, []
-        return fn(**args)
 
     async def run_agent(self) -> AsyncIterator[AgentAction | dict]:
         """Execute the agent loop, yielding each action as it happens.
@@ -172,7 +191,7 @@ class SandboxRunner:
                     )
                     yield call_action
 
-                    # Execute against mock
+                    # Execute against sandbox environment
                     t1 = time.monotonic()
                     result, diffs = self._execute_tool(tool_name, tool_args)
                     tool_elapsed = int((time.monotonic() - t1) * 1000)
@@ -205,6 +224,12 @@ class SandboxRunner:
             yield {
                 "type": "risk_report",
                 "report": risk_report.to_dict(),
+            }
+
+            # Yield final snapshot
+            yield {
+                "type": "final_snapshot",
+                "snapshot": self.env.to_snapshot(),
             }
 
         except Exception as e:

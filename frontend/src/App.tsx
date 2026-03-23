@@ -5,6 +5,7 @@ import NewRunForm from './components/NewRunForm';
 import Dashboard from './components/Dashboard';
 import TemplateLibrary from './components/TemplateLibrary';
 import PoliciesView from './components/PoliciesView';
+import RunComparisonView from './components/RunComparison';
 
 type View =
   | { page: 'dashboard' }
@@ -12,12 +13,14 @@ type View =
   | { page: 'detail'; runId: string }
   | { page: 'new'; templateId?: string }
   | { page: 'templates' }
-  | { page: 'policies' };
+  | { page: 'policies' }
+  | { page: 'compare'; initialRunA?: string };
 
 const NAV_ITEMS: { page: View['page']; label: string }[] = [
   { page: 'dashboard', label: 'Dashboard' },
   { page: 'history', label: 'Runs' },
   { page: 'templates', label: 'Templates' },
+  { page: 'compare', label: 'Compare' },
   { page: 'policies', label: 'Policies' },
 ];
 
@@ -82,6 +85,8 @@ export default function App() {
           <RunDetail
             runId={view.runId}
             onBack={() => setView({ page: 'history' })}
+            onViewRun={(id) => setView({ page: 'detail', runId: id })}
+            onCompare={(id) => setView({ page: 'compare', initialRunA: id })}
           />
         )}
         {view.page === 'new' && (
@@ -94,6 +99,12 @@ export default function App() {
         {view.page === 'templates' && (
           <TemplateLibrary
             onUseTemplate={(id) => setView({ page: 'new', templateId: id })}
+          />
+        )}
+        {view.page === 'compare' && (
+          <RunComparisonView
+            initialRunA={view.initialRunA}
+            onViewRun={(id) => setView({ page: 'detail', runId: id })}
           />
         )}
         {view.page === 'policies' && <PoliciesView />}

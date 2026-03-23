@@ -1,15 +1,45 @@
 import { useState } from 'react';
-import { submitApproval } from '../hooks/useApi';
+import { submitApproval, replayRun } from '../hooks/useApi';
 import type { SandboxRun } from '../types';
 
 interface Props {
   run: SandboxRun;
   onApproved: () => void;
+  onReplayCreated?: (id: string) => void;
 }
 
-export default function ApprovalPanel({ run, onApproved }: Props) {
+export default function ApprovalPanel({ run, onApproved, onReplayCreated }: Props) {
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [replaying, setReplaying] = useState(false);
+  const [replayResult, setReplayResult] = useState<{ id?: string; status?: string; message?: string } | null>(null);
+
+  const handleSubmit = async (decision: 'approved' | 'changes_requested' | 'rejected') => {
+    setSubmitting(true);
+    try {
+      await submitApproval(run.id, decision, notes);
+      onApproved();
+    } catch (err) {
+      console.error('Approval failed:', err);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleReplay = async (target: 'sandbox' | 'live') => {
+    setReplaying(true);
+    try {
+      const result = await replayRun(run.id, target);
+      setReplayResult(result);
+      if (result.id && onReplayCreated) {
+        onReplayCreated(result.id);
+      }
+    } catch (err) {
+      console.error('Replay failed:', err);
+    } finally {
+      setReplaying(false);
+    }
+  };
 
   if (run.approval) {
     const a = run.approval;
@@ -23,28 +53,53 @@ export default function ApprovalPanel({ run, onApproved }: Props) {
       'Changes Requested';
 
     return (
-      <div className={`rounded-lg border p-4 ${decisionStyle}`}>
-        <div className="text-sm font-semibold mb-1">{decisionText}</div>
-        {a.reviewer_notes && <p className="text-sm text-gray-600 mb-2">{a.reviewer_notes}</p>}
-        <div className="text-xs text-gray-400 space-y-1">
-          <div>At: {new Date(a.approved_at).toLocaleString()}</div>
-          <div className="font-mono break-all">Sig: {a.signature.slice(0, 32)}...</div>
+      <div className="space-y-3">
+        <div className={`rounded-lg border p-4 ${decisionStyle}`}>
+          <div className="text-sm font-semibold mb-1">{decisionText}</div>
+          {a.reviewer_notes && <p className="text-sm text-gray-600 mb-2">{a.reviewer_notes}</p>}
+          <div className="text-xs text-gray-400 space-y-1">
+            <div>At: {new Date(a.approved_at).toLocaleString()}</div>
+            <div className="font-mono break-all">Sig: {a.signature.slice(0, 32)}...</div>
+          </div>
         </div>
+
+        {/* Replay controls (only for approved runs) */}
+        {a.decision === 'approved' && (
+          <div className="bg-white rounded-lg border border-gray-200 p-4">
+            <h4 className="text-sm font-semibold text-gray-700 mb-2">Replay</h4>
+            <p className="text-xs text-gray-500 mb-3">
+              Re-run this approved agent against a sandbox or queue it for live execution.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => handleReplay('sandbox')}
+                disabled={replaying}
+                className="flex-1 px-3 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+              >
+                {replaying ? 'Replaying...' : 'Replay in Sandbox'}
+              </button>
+              <button
+                onClick={() => handleReplay('live')}
+                disabled={replaying}
+                className="flex-1 px-3 py-2 border border-orange-300 text-orange-700 text-sm font-medium rounded-lg hover:bg-orange-50 disabled:opacity-50 transition-colors"
+              >
+                Queue Live Replay
+              </button>
+            </div>
+            {replayResult && (
+              <div className="mt-2 p-2 bg-gray-50 rounded text-xs text-gray-600">
+                {replayResult.id ? (
+                  <span>New run created: <code className="font-mono">{replayResult.id}</code></span>
+                ) : (
+                  <span>{replayResult.message}</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     );
   }
-
-  const handleSubmit = async (decision: 'approved' | 'changes_requested' | 'rejected') => {
-    setSubmitting(true);
-    try {
-      await submitApproval(run.id, decision, notes);
-      onApproved();
-    } catch (err) {
-      console.error('Approval failed:', err);
-    } finally {
-      setSubmitting(false);
-    }
-  };
 
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-4">

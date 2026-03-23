@@ -3,6 +3,18 @@ export interface ToolConfig {
   enabled: boolean;
 }
 
+export interface EnvironmentConfig {
+  filesystem: Record<string, string>;
+  database: Record<string, Record<string, unknown>[]>;
+  http_stubs: {
+    url_pattern: string;
+    method?: string;
+    status_code?: number;
+    response_body?: unknown;
+    response_headers?: Record<string, string>;
+  }[];
+}
+
 export interface AgentDefinition {
   name: string;
   goal: string;
@@ -15,6 +27,7 @@ export interface AgentDefinition {
 export interface RunContext {
   user_persona: string;
   initial_state: Record<string, unknown>;
+  environment: EnvironmentConfig;
 }
 
 export interface AgentAction {
@@ -65,8 +78,16 @@ export interface PolicyViolation {
   details: Record<string, unknown>;
 }
 
+export interface EnvironmentSnapshot {
+  filesystem: Record<string, string>;
+  database: Record<string, Record<string, unknown>[]>;
+  emails_sent: Record<string, unknown>[];
+  http_log: Record<string, unknown>[];
+}
+
 export interface SandboxRun {
   id: string;
+  workspace_id?: string;
   agent_definition: AgentDefinition;
   run_context: RunContext;
   status: 'running' | 'complete' | 'failed';
@@ -76,6 +97,8 @@ export interface SandboxRun {
   risk_report: RiskReport | null;
   policy_violations: PolicyViolation[];
   error: string | null;
+  initial_snapshot: EnvironmentSnapshot | null;
+  final_snapshot: EnvironmentSnapshot | null;
   created_at: string;
 }
 
@@ -110,4 +133,47 @@ export interface PolicyConfig {
   description: string;
   enabled: boolean;
   action: string;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  role: string;
+  api_key_name?: string;
+  created_at: string;
+}
+
+export interface RunComparison {
+  run_a_id: string;
+  run_b_id: string;
+  metadata: {
+    run_a: { name: string; status: string; action_count: number; diff_count: number; created_at: string };
+    run_b: { name: string; status: string; action_count: number; diff_count: number; created_at: string };
+  };
+  tool_usage: {
+    run_a_total: number;
+    run_b_total: number;
+    per_tool: { tool: string; run_a_count: number; run_b_count: number; difference: number }[];
+    tools_only_in_a: string[];
+    tools_only_in_b: string[];
+  };
+  risk: {
+    run_a: { overall_score: number; risk_level: string; signal_count: number };
+    run_b: { overall_score: number; risk_level: string; signal_count: number };
+    score_difference: number;
+    risk_level_changed: boolean;
+  };
+  action_sequence: {
+    run_a_sequence: string[];
+    run_b_sequence: string[];
+    sequences_identical: boolean;
+    similarity: number;
+  };
+  environment: {
+    available: boolean;
+    filesystem?: { only_in_a: string[]; only_in_b: string[]; common: string[]; content_differs: string[] };
+    database?: { only_in_a: string[]; only_in_b: string[]; common: string[]; row_count_diff: Record<string, number> };
+    emails?: { run_a_count: number; run_b_count: number };
+  };
+  summary: string[];
 }

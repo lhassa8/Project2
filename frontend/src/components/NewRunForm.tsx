@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { createRun, getTemplateDetail } from '../hooks/useApi';
+import EnvironmentEditor from './EnvironmentEditor';
 
 const DEFAULT_TOOLS = [
   { name: 'read_file', enabled: true },
@@ -8,6 +9,12 @@ const DEFAULT_TOOLS = [
   { name: 'http_request', enabled: true },
   { name: 'query_database', enabled: true },
 ];
+
+const EMPTY_ENV = {
+  filesystem: {} as Record<string, string>,
+  database: {} as Record<string, Record<string, unknown>[]>,
+  http_stubs: [] as { url_pattern: string; method?: string; status_code?: number; response_body?: unknown }[],
+};
 
 interface Props {
   templateId?: string;
@@ -21,6 +28,8 @@ export default function NewRunForm({ templateId, onCreated, onCancel }: Props) {
   const [persona, setPersona] = useState('Enterprise user');
   const [initialState, setInitialState] = useState('{}');
   const [tools, setTools] = useState(DEFAULT_TOOLS.map(t => ({ ...t })));
+  const [environment, setEnvironment] = useState({ ...EMPTY_ENV });
+  const [showEnv, setShowEnv] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [templateLoading, setTemplateLoading] = useState(false);
 
@@ -34,6 +43,17 @@ export default function NewRunForm({ templateId, onCreated, onCancel }: Props) {
       setPersona(tmpl.run_context.user_persona);
       setInitialState(JSON.stringify(tmpl.run_context.initial_state, null, 2));
       setTools(tmpl.agent_definition.tools);
+      if (tmpl.run_context.environment) {
+        setEnvironment({
+          filesystem: tmpl.run_context.environment.filesystem || {},
+          database: tmpl.run_context.environment.database || {},
+          http_stubs: tmpl.run_context.environment.http_stubs || [],
+        });
+        const env = tmpl.run_context.environment;
+        if (Object.keys(env.filesystem || {}).length > 0 || Object.keys(env.database || {}).length > 0 || (env.http_stubs || []).length > 0) {
+          setShowEnv(true);
+        }
+      }
       setTemplateLoading(false);
     }).catch(() => setTemplateLoading(false));
   }, [templateId]);
@@ -69,6 +89,7 @@ export default function NewRunForm({ templateId, onCreated, onCancel }: Props) {
         run_context: {
           user_persona: persona,
           initial_state: parsedState,
+          environment,
         },
       });
       onCreated(result.id);
@@ -149,6 +170,27 @@ export default function NewRunForm({ templateId, onCreated, onCancel }: Props) {
               </button>
             ))}
           </div>
+        </div>
+
+        {/* Environment config */}
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowEnv(!showEnv)}
+            className="flex items-center gap-2 text-sm font-medium text-gray-700 hover:text-indigo-600 transition-colors"
+          >
+            <span>{showEnv ? '▾' : '▸'}</span>
+            Sandbox Environment
+            {(Object.keys(environment.filesystem).length > 0 || Object.keys(environment.database).length > 0 || environment.http_stubs.length > 0) && (
+              <span className="text-xs text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">configured</span>
+            )}
+          </button>
+          <p className="text-xs text-gray-400 mt-1 mb-2">
+            Seed files, database tables, and HTTP stubs for realistic simulation
+          </p>
+          {showEnv && (
+            <EnvironmentEditor value={environment} onChange={setEnvironment} />
+          )}
         </div>
 
         <div className="flex justify-end gap-3 pt-2">

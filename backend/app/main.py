@@ -4,15 +4,17 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import init_db
-from .routers import analytics, policies, runs, templates
+from .routers import analytics, mcp, policies, runs, templates, workspaces
 
 app = FastAPI(
     title="AgentSandbox",
     description=(
         "Enterprise simulation layer for previewing, debugging, and approving "
-        "autonomous Claude agent actions before granting real-system access."
+        "autonomous Claude agent actions before granting real-system access. "
+        "Features stateful sandbox environments, MCP-compatible server, "
+        "workspace-scoped auth, run comparison, and approval-gated replay."
     ),
-    version="0.2.0",
+    version="1.0.0",
 )
 
 app.add_middleware(
@@ -27,6 +29,8 @@ app.include_router(runs.router)
 app.include_router(templates.router)
 app.include_router(analytics.router)
 app.include_router(policies.router)
+app.include_router(workspaces.router)
+app.include_router(mcp.router)
 
 
 @app.on_event("startup")
@@ -36,4 +40,4 @@ def on_startup():
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "service": "AgentSandbox", "version": "0.2.0"}
+    return {"status": "ok", "service": "AgentSandbox", "version": "1.0.0"}

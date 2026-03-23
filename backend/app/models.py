@@ -41,9 +41,17 @@ class AgentDefinition(BaseModel):
     temperature: float = 0.0
 
 
+class EnvironmentConfig(BaseModel):
+    """Configurable seed data for the sandbox environment."""
+    filesystem: dict[str, str] = Field(default_factory=dict)
+    database: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
+    http_stubs: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class RunContext(BaseModel):
     user_persona: str = "Enterprise user"
     initial_state: dict[str, Any] = Field(default_factory=dict)
+    environment: EnvironmentConfig = Field(default_factory=EnvironmentConfig)
 
 
 # ── Actions & diffs ────────────────────────────────────────────────────────
@@ -108,3 +116,43 @@ class CreateRunRequest(BaseModel):
 class ApprovalRequest(BaseModel):
     decision: Literal["approved", "changes_requested", "rejected"]
     reviewer_notes: str = ""
+
+
+# ── Auth & workspaces ─────────────────────────────────────────────────────
+
+class Workspace(BaseModel):
+    id: str = Field(default_factory=_new_id)
+    name: str
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+class APIKey(BaseModel):
+    key: str = Field(default_factory=lambda: f"ask_{uuid.uuid4().hex}")
+    workspace_id: str
+    name: str = "Default"
+    role: Literal["admin", "reviewer", "viewer"] = "admin"
+    created_at: datetime = Field(default_factory=_utcnow)
+    is_active: bool = True
+
+
+class User(BaseModel):
+    id: str = Field(default_factory=_new_id)
+    email: str
+    name: str
+    workspace_id: str
+    role: Literal["admin", "reviewer", "viewer"] = "viewer"
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
+# ── Run comparison ────────────────────────────────────────────────────────
+
+class RunComparisonRequest(BaseModel):
+    run_id_a: str
+    run_id_b: str
+
+
+# ── Execution replay ─────────────────────────────────────────────────────
+
+class ReplayRequest(BaseModel):
+    target: Literal["sandbox", "live"] = "sandbox"
+    environment_overrides: dict[str, Any] = Field(default_factory=dict)

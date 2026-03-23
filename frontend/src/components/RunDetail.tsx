@@ -9,12 +9,15 @@ import StatusBadge from './StatusBadge';
 interface Props {
   runId: string;
   onBack: () => void;
+  onViewRun?: (id: string) => void;
+  onCompare?: (runId: string) => void;
 }
 
-export default function RunDetail({ runId, onBack }: Props) {
+export default function RunDetail({ runId, onBack, onViewRun, onCompare }: Props) {
   const { run, loading, refresh } = useRun(runId);
   const stream = useRunStream(runId);
   const [exporting, setExporting] = useState(false);
+  const [showSnapshot, setShowSnapshot] = useState<'initial' | 'final' | null>(null);
 
   const actions = stream.actions.length > 0 ? stream.actions : (run?.actions ?? []);
   const status = stream.status !== 'running' ? stream.status : (run?.status ?? 'running');
@@ -54,19 +57,31 @@ export default function RunDetail({ runId, onBack }: Props) {
     return <div className="text-center py-12 text-gray-500">Run not found</div>;
   }
 
+  const snapshot = showSnapshot === 'initial' ? run.initial_snapshot : showSnapshot === 'final' ? run.final_snapshot : null;
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
         <button onClick={onBack} className="text-sm text-indigo-600 hover:text-indigo-800">
           &larr; Back to runs
         </button>
-        <button
-          onClick={handleExport}
-          disabled={exporting}
-          className="px-3 py-1.5 border border-gray-300 text-sm text-gray-600 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
-        >
-          {exporting ? 'Exporting...' : 'Export Audit Artifact'}
-        </button>
+        <div className="flex gap-2">
+          {onCompare && status === 'complete' && (
+            <button
+              onClick={() => onCompare(runId)}
+              className="px-3 py-1.5 border border-indigo-300 text-sm text-indigo-600 rounded-lg hover:bg-indigo-50 transition-colors"
+            >
+              Compare
+            </button>
+          )}
+          <button
+            onClick={handleExport}
+            disabled={exporting}
+            className="px-3 py-1.5 border border-gray-300 text-sm text-gray-600 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
+          >
+            {exporting ? 'Exporting...' : 'Export Audit'}
+          </button>
+        </div>
       </div>
 
       {/* Run header */}
@@ -113,6 +128,73 @@ export default function RunDetail({ runId, onBack }: Props) {
             </div>
           )}
 
+          {/* Environment snapshots */}
+          {(run.initial_snapshot || run.final_snapshot) && (
+            <div>
+              <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
+                Environment
+              </h3>
+              <div className="bg-white rounded-lg border border-gray-200 p-4">
+                <div className="flex gap-2 mb-3">
+                  <button
+                    onClick={() => setShowSnapshot(showSnapshot === 'initial' ? null : 'initial')}
+                    className={`text-xs px-3 py-1.5 rounded-lg font-medium border transition-colors ${
+                      showSnapshot === 'initial'
+                        ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                        : 'bg-gray-50 border-gray-200 text-gray-500 hover:border-gray-300'
+                    }`}
+                  >
+                    Initial State
+                  </button>
+                  {run.final_snapshot && (
+                    <button
+                      onClick={() => setShowSnapshot(showSnapshot === 'final' ? null : 'final')}
+                      className={`text-xs px-3 py-1.5 rounded-lg font-medium border transition-colors ${
+                        showSnapshot === 'final'
+                          ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                          : 'bg-gray-50 border-gray-200 text-gray-500 hover:border-gray-300'
+                      }`}
+                    >
+                      Final State
+                    </button>
+                  )}
+                </div>
+                {snapshot && (
+                  <div className="space-y-3">
+                    {Object.keys(snapshot.filesystem || {}).length > 0 && (
+                      <div>
+                        <div className="text-xs font-medium text-gray-500 mb-1">
+                          Files ({Object.keys(snapshot.filesystem).length})
+                        </div>
+                        {Object.keys(snapshot.filesystem).map(path => (
+                          <div key={path} className="text-xs text-gray-600 font-mono">{path}</div>
+                        ))}
+                      </div>
+                    )}
+                    {Object.keys(snapshot.database || {}).length > 0 && (
+                      <div>
+                        <div className="text-xs font-medium text-gray-500 mb-1">
+                          Tables ({Object.keys(snapshot.database).length})
+                        </div>
+                        {Object.entries(snapshot.database).map(([table, rows]) => (
+                          <div key={table} className="text-xs text-gray-600">
+                            <span className="font-mono">{table}</span>
+                            <span className="text-gray-400"> ({(rows as unknown[]).length} rows)</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {(snapshot.emails_sent || []).length > 0 && (
+                      <div className="text-xs text-gray-600">
+                        Emails sent: {snapshot.emails_sent.length}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* State diffs */}
           {run.diffs && run.diffs.length > 0 && (
             <div>
@@ -129,7 +211,11 @@ export default function RunDetail({ runId, onBack }: Props) {
               <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-3">
                 Approval
               </h3>
-              <ApprovalPanel run={run} onApproved={refresh} />
+              <ApprovalPanel
+                run={run}
+                onApproved={refresh}
+                onReplayCreated={onViewRun}
+              />
             </div>
           )}
         </div>
