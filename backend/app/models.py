@@ -1,0 +1,110 @@
+"""Core data models for AgentSandbox."""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _new_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+# ── Agent definition & run context ──────────────────────────────────────────
+
+class ToolConfig(BaseModel):
+    name: str
+    enabled: bool = True
+
+
+class AgentDefinition(BaseModel):
+    name: str = "Unnamed Agent"
+    goal: str
+    tools: list[ToolConfig] = Field(default_factory=lambda: [
+        ToolConfig(name="read_file"),
+        ToolConfig(name="write_file"),
+        ToolConfig(name="send_email"),
+        ToolConfig(name="http_request"),
+        ToolConfig(name="query_database"),
+    ])
+    model: str = "claude-sonnet-4-20250514"
+    max_tokens: int = 4096
+    temperature: float = 0.0
+
+
+class RunContext(BaseModel):
+    user_persona: str = "Enterprise user"
+    initial_state: dict[str, Any] = Field(default_factory=dict)
+
+
+# ── Actions & diffs ────────────────────────────────────────────────────────
+
+class AgentAction(BaseModel):
+    sequence: int
+    action_type: Literal["thought", "tool_call", "tool_response", "final_output"]
+    content: dict[str, Any]
+    timestamp: datetime = Field(default_factory=_utcnow)
+    duration_ms: int = 0
+    mock_system: str | None = None
+
+
+class StateDiff(BaseModel):
+    system: str
+    resource_id: str
+    before: dict[str, Any] | str | None = None
+    after: dict[str, Any] | str
+    change_type: Literal["created", "modified", "deleted"]
+
+
+# ── Approval ────────────────────────────────────────────────────────────────
+
+APPROVAL_SECRET = "agent-sandbox-hmac-secret"
+
+
+class ApprovalRecord(BaseModel):
+    run_id: str
+    decision: Literal["approved", "changes_requested", "rejected"]
+    reviewer_notes: str = ""
+    approved_at: datetime = Field(default_factory=_utcnow)
+    signature: str = ""
+
+    def sign(self) -> None:
+        payload = f"{self.run_id}:{self.decision}:{self.approved_at.isoformat()}"
+        self.signature = hmac.new(
+            APPROVAL_SECRET.encode(), payload.encode(), hashlib.sha256
+        ).hexdigest()
+
+
+# ── Sandbox run ─────────────────────────────────────────────────────────────
+
+class SandboxRun(BaseModel):
+    id: str = Field(default_factory=_new_id)
+    agent_definition: AgentDefinition
+    run_context: RunContext = Field(default_factory=RunContext)
+    status: Literal["running", "complete", "failed"] = "running"
+    actions: list[AgentAction] = Field(default_factory=list)
+    diffs: list[StateDiff] = Field(default_factory=list)
+    approval: ApprovalRecord | None = None
+    created_at: datetime = Field(default_factory=_utcnow)
+    error: str | None = None
+
+
+# ── API request/response models ─────────────────────────────────────────────
+
+class CreateRunRequest(BaseModel):
+    agent_definition: AgentDefinition
+    run_context: RunContext = Field(default_factory=RunContext)
+
+
+class ApprovalRequest(BaseModel):
+    decision: Literal["approved", "changes_requested", "rejected"]
+    reviewer_notes: str = ""
