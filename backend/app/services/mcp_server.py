@@ -25,6 +25,10 @@ from .sandbox_environment import SandboxEnvironment
 from .policy_engine import PolicyEngine
 from .risk_engine import score_run
 
+# Build a lookup of required args per tool from TOOL_SCHEMAS
+_TOOL_REQUIRED_ARGS: dict[str, list[str]] = {}
+for _schema in TOOL_SCHEMAS:
+    _TOOL_REQUIRED_ARGS[_schema["name"]] = _schema.get("input_schema", {}).get("required", [])
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 
@@ -123,6 +127,12 @@ class MCPSession:
             approval_required = next((v for v in violations if v.policy_action.value == "require_approval"), None)
             if approval_required:
                 return self._error(msg_id, -32001, f"Human approval required: {approval_required.description}")
+
+        # Validate required arguments
+        required = _TOOL_REQUIRED_ARGS.get(tool_name, [])
+        missing = [arg for arg in required if arg not in tool_args]
+        if missing:
+            return self._error(msg_id, -32602, f"Missing required arguments: {missing}")
 
         # Record action
         self.sequence += 1

@@ -274,7 +274,10 @@ class PolicyEngine:
         return violations
 
     def has_blockers(self, violations: list[PolicyViolation]) -> bool:
-        return any(v.policy_action == PolicyAction.BLOCK for v in violations)
+        return any(
+            v.policy_action in (PolicyAction.BLOCK, PolicyAction.REQUIRE_APPROVAL)
+            for v in violations
+        )
 
     def get_policy_config(self) -> list[dict]:
         return [

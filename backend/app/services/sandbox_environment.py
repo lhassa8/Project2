@@ -49,6 +49,27 @@ class SandboxEnvironment:
             "http_log": list(self.http_log),
         }
 
+    def checkpoint(self) -> dict:
+        """Create a deep-copy checkpoint that can be restored on error."""
+        return {
+            "filesystem": dict(self.filesystem),
+            "database": {k: [dict(r) for r in v] for k, v in self.database.items()},
+            "emails_sent": [dict(e) for e in self.emails_sent],
+            "http_log": [dict(h) for h in self.http_log],
+            "db_sequences": dict(self._db_sequences),
+        }
+
+    def restore(self, checkpoint: dict) -> None:
+        """Restore state from a checkpoint, undoing all mutations since."""
+        self.filesystem = dict(checkpoint["filesystem"])
+        self.database = {
+            k: [dict(r) for r in v]
+            for k, v in checkpoint["database"].items()
+        }
+        self.emails_sent = [dict(e) for e in checkpoint["emails_sent"]]
+        self.http_log = [dict(h) for h in checkpoint["http_log"]]
+        self._db_sequences = dict(checkpoint["db_sequences"])
+
     # ── File operations ─────────────────────────────────────────────────
 
     def read_file(self, path: str) -> tuple[dict, list[StateDiff]]:
@@ -341,19 +362,25 @@ class HttpStub:
         response_body: Any = None,
         response_headers: dict[str, str] | None = None,
     ):
-        self.url_pattern = url_pattern
         self.method = method.upper()
         self.status_code = status_code
         self.response_body = response_body or {"status": "ok"}
         self.response_headers = response_headers or {"content-type": "application/json"}
+        # Validate regex at init to fail fast on bad patterns
+        try:
+            re.compile(url_pattern)
+            self.url_pattern = url_pattern
+            self._is_regex = True
+        except re.error:
+            self.url_pattern = url_pattern
+            self._is_regex = False
 
     def matches(self, method: str, url: str) -> bool:
         if self.method != "*" and self.method != method.upper():
             return False
-        try:
+        if self._is_regex:
             return bool(re.search(self.url_pattern, url, re.IGNORECASE))
-        except re.error:
-            return self.url_pattern in url
+        return self.url_pattern in url
 
     def response(self) -> dict:
         return {

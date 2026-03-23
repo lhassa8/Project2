@@ -14,8 +14,18 @@ from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
 import anthropic
+import anthropic as _anthropic_mod
 
 from ..models import AgentAction, AgentDefinition, RunContext, SandboxRun, StateDiff
+
+# Transient Anthropic errors worth retrying
+_RETRYABLE_ERRORS = (
+    _anthropic_mod.APIConnectionError,
+    _anthropic_mod.RateLimitError,
+    _anthropic_mod.InternalServerError,
+)
+_MAX_API_RETRIES = 3
+_RETRY_BACKOFF_BASE = 2  # seconds
 from .mock_tools import TOOL_SCHEMAS
 from .policy_engine import PolicyEngine
 from .risk_engine import score_run
@@ -53,6 +63,7 @@ class SandboxRunner:
             self.env = SandboxEnvironment(env_config if env_config.get("filesystem") or env_config.get("database") or env_config.get("http_stubs") else None)
 
         self.initial_snapshot = self.env.to_snapshot()
+        self._last_checkpoint: dict | None = None
 
     def _tool_schemas(self) -> list[dict]:
         return [s for s in TOOL_SCHEMAS if s["name"] in self._enabled_tools]
@@ -119,14 +130,8 @@ class SandboxRunner:
         try:
             for _iteration in range(20):  # hard cap on iterations
                 t0 = time.monotonic()
-                response = await asyncio.to_thread(
-                    self.client.messages.create,
-                    model=self.run.agent_definition.model,
-                    max_tokens=self.run.agent_definition.max_tokens,
-                    temperature=self.run.agent_definition.temperature,
-                    system=system_prompt,
-                    tools=tools,
-                    messages=messages,
+                response = await self._call_api_with_retry(
+                    system_prompt, tools, messages
                 )
                 elapsed = int((time.monotonic() - t0) * 1000)
 
@@ -160,6 +165,9 @@ class SandboxRunner:
                     "content": [self._block_to_dict(b) for b in response.content],
                 })
 
+                # Checkpoint environment before tool execution batch
+                self._last_checkpoint = self.env.checkpoint()
+
                 # Execute each tool call
                 tool_results = []
                 for tool_block in tool_use_blocks:
@@ -185,6 +193,8 @@ class SandboxRunner:
                             None,
                         )
                         if blocker:
+                            if self._last_checkpoint:
+                                self.env.restore(self._last_checkpoint)
                             self.run.status = "failed"
                             self.run.error = f"Policy blocked: {blocker.description}"
                             action = self._add_action(
@@ -194,6 +204,8 @@ class SandboxRunner:
                             yield action
                             return
                         if approval_required:
+                            if self._last_checkpoint:
+                                self.env.restore(self._last_checkpoint)
                             self.run.status = "failed"
                             self.run.error = f"Human approval required: {approval_required.description}"
                             action = self._add_action(
@@ -270,11 +282,54 @@ class SandboxRunner:
                 "snapshot": self.env.to_snapshot(),
             }
 
+        except _anthropic_mod.AuthenticationError as e:
+            self.run.status = "failed"
+            self.run.error = f"Authentication error: invalid API key or permissions — {e}"
+            action = self._add_action("final_output", {"error": self.run.error, "error_type": "auth"})
+            yield action
+        except _anthropic_mod.BadRequestError as e:
+            self.run.status = "failed"
+            self.run.error = f"Bad request to Anthropic API — {e}"
+            action = self._add_action("final_output", {"error": self.run.error, "error_type": "bad_request"})
+            yield action
+        except _RETRYABLE_ERRORS as e:
+            # Retries exhausted (the retry method already tried _MAX_API_RETRIES times)
+            self.run.status = "failed"
+            self.run.error = f"Anthropic API unavailable after retries — {type(e).__name__}: {e}"
+            action = self._add_action("final_output", {"error": self.run.error, "error_type": "transient"})
+            yield action
         except Exception as e:
             self.run.status = "failed"
-            self.run.error = str(e)
-            action = self._add_action("final_output", {"error": str(e)})
+            self.run.error = f"Unexpected error: {type(e).__name__}: {e}"
+            action = self._add_action("final_output", {"error": self.run.error, "error_type": "unknown"})
             yield action
+
+    async def _call_api_with_retry(
+        self,
+        system_prompt: str,
+        tools: list[dict],
+        messages: list[dict[str, Any]],
+    ) -> Any:
+        """Call the Anthropic API with retries for transient errors."""
+        last_error: Exception | None = None
+        for attempt in range(_MAX_API_RETRIES + 1):
+            try:
+                return await asyncio.to_thread(
+                    self.client.messages.create,
+                    model=self.run.agent_definition.model,
+                    max_tokens=self.run.agent_definition.max_tokens,
+                    temperature=self.run.agent_definition.temperature,
+                    system=system_prompt,
+                    tools=tools,
+                    messages=messages,
+                )
+            except _RETRYABLE_ERRORS as e:
+                last_error = e
+                if attempt < _MAX_API_RETRIES:
+                    await asyncio.sleep(_RETRY_BACKOFF_BASE ** attempt)
+                    continue
+                raise
+        raise last_error  # unreachable, but satisfies type checker
 
     @staticmethod
     def _block_to_dict(block: Any) -> dict:
