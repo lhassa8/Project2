@@ -155,12 +155,36 @@ class RunStore:
             return None
         return self._row_to_dict(row)
 
-    def list_all(self, workspace_id: str | None = None) -> list[dict]:
+    def list_all(
+        self,
+        workspace_id: str | None = None,
+        status: str | None = None,
+        agent_name: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[dict]:
         query = self.session.query(RunRow)
         if workspace_id:
             query = query.filter(RunRow.workspace_id == workspace_id)
-        rows = query.order_by(RunRow.created_at.desc()).all()
+        if status:
+            query = query.filter(RunRow.status == status)
+        if agent_name:
+            query = query.filter(RunRow.agent_definition.contains(agent_name))
+        query = query.order_by(RunRow.created_at.desc())
+        if offset:
+            query = query.offset(offset)
+        if limit:
+            query = query.limit(limit)
+        rows = query.all()
         return [self._row_to_dict(r) for r in rows]
+
+    def count(self, workspace_id: str | None = None, status: str | None = None) -> int:
+        query = self.session.query(RunRow)
+        if workspace_id:
+            query = query.filter(RunRow.workspace_id == workspace_id)
+        if status:
+            query = query.filter(RunRow.status == status)
+        return query.count()
 
     @staticmethod
     def _row_to_dict(row: RunRow) -> dict:

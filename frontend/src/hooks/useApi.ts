@@ -28,20 +28,29 @@ function authFetch(url: string, opts: RequestInit = {}): Promise<Response> {
 
 // ── Runs ──────────────────────────────────────────────────────────────────
 
-export function useRuns() {
+export function useRuns(filters?: { status?: string; agent_name?: string; limit?: number; offset?: number }) {
   const [runs, setRuns] = useState<SandboxRun[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
 
   const fetchRuns = useCallback(async () => {
     setLoading(true);
-    const res = await authFetch(API);
-    setRuns(await res.json());
+    const params = new URLSearchParams();
+    if (filters?.status) params.set('status', filters.status);
+    if (filters?.agent_name) params.set('agent_name', filters.agent_name);
+    if (filters?.limit) params.set('limit', String(filters.limit));
+    if (filters?.offset) params.set('offset', String(filters.offset));
+    const qs = params.toString();
+    const res = await authFetch(`${API}${qs ? `?${qs}` : ''}`);
+    const data = await res.json();
+    setRuns(data.runs ?? data);
+    setTotal(data.total ?? (data.runs ?? data).length);
     setLoading(false);
-  }, []);
+  }, [filters?.status, filters?.agent_name, filters?.limit, filters?.offset]);
 
   useEffect(() => { fetchRuns(); }, [fetchRuns]);
 
-  return { runs, loading, refresh: fetchRuns };
+  return { runs, total, loading, refresh: fetchRuns };
 }
 
 export function useRun(runId: string | null) {
@@ -193,17 +202,39 @@ export function useAnalytics() {
 // ── Policies ───────────────────────────────────────────────────────────────
 
 export function usePolicies() {
-  const [policies, setPolicies] = useState<PolicyConfig[]>([]);
+  const [builtin, setBuiltin] = useState<PolicyConfig[]>([]);
+  const [custom, setCustom] = useState<PolicyConfig[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    authFetch('/api/policies')
-      .then(r => r.json())
-      .then(data => { setPolicies(data); setLoading(false); })
-      .catch(() => setLoading(false));
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await authFetch('/api/policies');
+      const data = await res.json();
+      setBuiltin(data.builtin ?? data);
+      setCustom(data.custom ?? []);
+    } catch { /* ignore */ }
+    setLoading(false);
   }, []);
 
-  return { policies, loading };
+  useEffect(() => { refresh(); }, [refresh]);
+
+  return { builtin, custom, policies: [...builtin, ...custom], loading, refresh };
+}
+
+export async function createPolicy(policy: { name: string; description: string; action: string; tool_name?: string; pattern?: string; target_field?: string }) {
+  const res = await authFetch('/api/policies', { method: 'POST', body: JSON.stringify(policy) });
+  return res.json();
+}
+
+export async function updatePolicy(id: number, updates: Record<string, unknown>) {
+  const res = await authFetch(`/api/policies/${id}`, { method: 'PUT', body: JSON.stringify(updates) });
+  return res.json();
+}
+
+export async function deletePolicy(id: number) {
+  const res = await authFetch(`/api/policies/${id}`, { method: 'DELETE' });
+  return res.json();
 }
 
 // ── Workspace ──────────────────────────────────────────────────────────────
@@ -240,5 +271,65 @@ export async function createApiKey(name: string, role: string = 'admin') {
 
 export async function listApiKeys(): Promise<{ key: string; name: string; role: string }[]> {
   const res = await authFetch('/api/workspaces/api-keys');
+  return res.json();
+}
+
+// ── Audit log ─────────────────────────────────────────────────────────────
+
+export function useAuditLog(filters?: { event_type?: string; resource_type?: string; limit?: number; offset?: number }) {
+  const [events, setEvents] = useState<Record<string, unknown>[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    const params = new URLSearchParams();
+    if (filters?.event_type) params.set('event_type', filters.event_type);
+    if (filters?.resource_type) params.set('resource_type', filters.resource_type);
+    if (filters?.limit) params.set('limit', String(filters.limit));
+    if (filters?.offset) params.set('offset', String(filters.offset));
+    const qs = params.toString();
+    const res = await authFetch(`/api/audit${qs ? `?${qs}` : ''}`);
+    const data = await res.json();
+    setEvents(data.events ?? []);
+    setTotal(data.total ?? 0);
+    setLoading(false);
+  }, [filters?.event_type, filters?.resource_type, filters?.limit, filters?.offset]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  return { events, total, loading, refresh };
+}
+
+// ── Webhooks ──────────────────────────────────────────────────────────────
+
+export function useWebhooks() {
+  const [webhooks, setWebhooks] = useState<Record<string, unknown>[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    const res = await authFetch('/api/webhooks');
+    setWebhooks(await res.json());
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  return { webhooks, loading, refresh };
+}
+
+export async function createWebhook(data: { name: string; url: string; events: string[]; secret?: string }) {
+  const res = await authFetch('/api/webhooks', { method: 'POST', body: JSON.stringify(data) });
+  return res.json();
+}
+
+export async function deleteWebhook(id: number) {
+  const res = await authFetch(`/api/webhooks/${id}`, { method: 'DELETE' });
+  return res.json();
+}
+
+export async function testWebhook(id: number) {
+  const res = await authFetch(`/api/webhooks/${id}/test`, { method: 'POST' });
   return res.json();
 }

@@ -1,4 +1,4 @@
-"""API routes for analytics dashboard."""
+"""API routes for analytics dashboard — workspace-scoped."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from collections import Counter
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from ..auth import AuthContext, get_auth_context
 from ..database import RunStore, get_db
 from ..services.risk_engine import score_run
 
@@ -14,9 +15,12 @@ router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
 
 @router.get("")
-def get_analytics(db: Session = Depends(get_db)) -> dict:
-    """Aggregate analytics across all sandbox runs."""
-    runs = RunStore(db).list_all()
+def get_analytics(
+    auth: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Aggregate analytics across all sandbox runs for the current workspace."""
+    runs = RunStore(db).list_all(workspace_id=auth.workspace_id)
 
     total = len(runs)
     if total == 0:
@@ -62,7 +66,6 @@ def get_analytics(db: Session = Depends(get_db)) -> dict:
         if rr:
             risk_dist[rr.get("risk_level", "unknown")] += 1
         elif r["status"] == "complete":
-            # Compute on-the-fly
             report = score_run(r.get("actions", []), r.get("diffs", []))
             risk_dist[report.risk_level] += 1
 

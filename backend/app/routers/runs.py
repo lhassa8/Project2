@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
 from ..auth import AuthContext, get_auth_context, require_role
@@ -19,6 +19,17 @@ from ..models import (
     ReplayRequest,
     RunComparisonRequest,
     SandboxRun,
+)
+from ..services.audit_log import (
+    AuditLogger,
+    EVENT_APPROVAL_APPROVED,
+    EVENT_APPROVAL_REJECTED,
+    EVENT_APPROVAL_SUBMITTED,
+    EVENT_RUN_COMPLETED,
+    EVENT_RUN_CREATED,
+    EVENT_RUN_EXPORTED,
+    EVENT_RUN_FAILED,
+    EVENT_RUN_REPLAYED,
 )
 from ..services.comparison import compare_runs
 from ..services.sandbox_runner import SandboxRunner
@@ -41,6 +52,20 @@ async def _broadcast(run_id: str, data: dict) -> None:
             dead.append(ws)
     for ws in dead:
         conns.remove(ws)
+
+
+async def _dispatch_webhooks(workspace_id: str, event_type: str, payload: dict) -> None:
+    """Fire-and-forget webhook dispatch."""
+    try:
+        from ..database import SessionLocal
+        from ..services.webhooks import dispatch_event
+        db = SessionLocal()
+        try:
+            await dispatch_event(db, workspace_id, event_type, payload)
+        finally:
+            db.close()
+    except Exception:
+        pass  # Webhook failures should not block the run
 
 
 # ── REST endpoints ───────────────────────────────────────────────────────────
@@ -68,6 +93,16 @@ async def create_run(
     run_data["initial_snapshot"] = env.to_snapshot()
     store.save(run_data)
 
+    # Audit log
+    AuditLogger(db).log(
+        workspace_id=auth.workspace_id,
+        event_type=EVENT_RUN_CREATED,
+        actor=auth.api_key_name or "default",
+        resource_type="run",
+        resource_id=run.id,
+        details={"agent_name": req.agent_definition.name, "goal": req.agent_definition.goal[:200]},
+    )
+
     # Run the agent in the background
     asyncio.create_task(_execute_run(run, store, auth.workspace_id, env))
 
@@ -93,6 +128,11 @@ async def _execute_run(
             elif event.get("type") == "policy_violation":
                 policy_violations.append(event["violation"])
                 await _broadcast(run.id, event)
+                # Dispatch webhook for policy violations
+                asyncio.create_task(_dispatch_webhooks(
+                    workspace_id, "policy.violation",
+                    {"run_id": run.id, "violation": event["violation"]},
+                ))
             elif event.get("type") == "final_snapshot":
                 final_snapshot = event["snapshot"]
         else:
@@ -126,14 +166,72 @@ async def _execute_run(
     run_data["final_snapshot"] = runner.env.to_snapshot()
     store.save(run_data)
 
+    # Audit log for completion
+    from ..database import SessionLocal
+    audit_db = SessionLocal()
+    try:
+        event_type = EVENT_RUN_COMPLETED if run.status == "complete" else EVENT_RUN_FAILED
+        AuditLogger(audit_db).log(
+            workspace_id=workspace_id,
+            event_type=event_type,
+            actor="system",
+            resource_type="run",
+            resource_id=run.id,
+            details={
+                "status": run.status,
+                "action_count": len(run.actions),
+                "risk_level": risk_report.get("risk_level") if risk_report else None,
+            },
+        )
+    finally:
+        audit_db.close()
+
+    # Dispatch webhooks for completion
+    webhook_event = "run.completed" if run.status == "complete" else "run.failed"
+    await _dispatch_webhooks(workspace_id, webhook_event, {
+        "run_id": run.id,
+        "status": run.status,
+        "risk_report": risk_report,
+        "action_count": len(run.actions),
+    })
+
+    # Dispatch webhook for high/critical risk
+    if risk_report:
+        level = risk_report.get("risk_level", "")
+        if level in ("critical", "high"):
+            await _dispatch_webhooks(workspace_id, f"risk.{level}", {
+                "run_id": run.id,
+                "risk_level": level,
+                "risk_score": risk_report.get("overall_score"),
+                "summary": risk_report.get("summary"),
+            })
+
 
 @router.get("")
 def list_runs(
+    status: str | None = Query(None, description="Filter by status: running, complete, failed"),
+    agent_name: str | None = Query(None, description="Search by agent name"),
+    limit: int = Query(50, ge=1, le=200, description="Max results"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
     auth: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
-) -> list[dict]:
-    """List all sandbox runs for the current workspace."""
-    return RunStore(db).list_all(workspace_id=auth.workspace_id)
+) -> dict:
+    """List sandbox runs for the current workspace with filtering and pagination."""
+    store = RunStore(db)
+    runs = store.list_all(
+        workspace_id=auth.workspace_id,
+        status=status,
+        agent_name=agent_name,
+        limit=limit,
+        offset=offset,
+    )
+    total = store.count(workspace_id=auth.workspace_id, status=status)
+    return {
+        "runs": runs,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/{run_id}")
@@ -146,7 +244,7 @@ def get_run(run_id: str, db: Session = Depends(get_db)) -> dict:
 
 
 @router.post("/{run_id}/approve")
-def approve_run(
+async def approve_run(
     run_id: str,
     req: ApprovalRequest,
     auth: AuthContext = Depends(get_auth_context),
@@ -172,11 +270,36 @@ def approve_run(
 
     run_data["approval"] = record.model_dump(mode="json")
     store.save(run_data)
+
+    # Audit log
+    event_type = EVENT_APPROVAL_APPROVED if req.decision == "approved" else (
+        EVENT_APPROVAL_REJECTED if req.decision == "rejected" else EVENT_APPROVAL_SUBMITTED
+    )
+    AuditLogger(db).log(
+        workspace_id=auth.workspace_id,
+        event_type=event_type,
+        actor=auth.api_key_name or "default",
+        resource_type="approval",
+        resource_id=run_id,
+        details={"decision": req.decision, "notes": req.reviewer_notes[:200] if req.reviewer_notes else None},
+    )
+
+    # Dispatch webhook
+    await _dispatch_webhooks(auth.workspace_id, "approval.submitted", {
+        "run_id": run_id,
+        "decision": req.decision,
+        "reviewer_notes": req.reviewer_notes,
+    })
+
     return run_data["approval"]
 
 
 @router.get("/{run_id}/export")
-def export_run(run_id: str, db: Session = Depends(get_db)) -> dict:
+def export_run(
+    run_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+) -> dict:
     """Export a full audit artifact for a run — suitable for compliance storage."""
     run_data = RunStore(db).get(run_id)
     if run_data is None:
@@ -185,6 +308,15 @@ def export_run(run_id: str, db: Session = Depends(get_db)) -> dict:
     risk_report = score_run(
         run_data.get("actions", []),
         run_data.get("diffs", []),
+    )
+
+    # Audit log
+    AuditLogger(db).log(
+        workspace_id=auth.workspace_id,
+        event_type=EVENT_RUN_EXPORTED,
+        actor=auth.api_key_name or "default",
+        resource_type="run",
+        resource_id=run_id,
     )
 
     return {
@@ -237,18 +369,13 @@ async def replay_run(
     auth: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Replay an approved run — re-execute the same agent with optional env overrides.
-
-    If target is 'sandbox', creates a new sandbox run with the same agent
-    definition. This lets you test the same agent against different environments.
-    """
+    """Replay an approved run — re-execute the same agent with optional env overrides."""
     store = RunStore(db)
     original = store.get(run_id)
     if original is None:
         raise HTTPException(status_code=404, detail="Run not found")
 
     if req.target == "live":
-        # Live replay requires approval
         if not original.get("approval") or original["approval"].get("decision") != "approved":
             raise HTTPException(
                 status_code=400,
@@ -261,12 +388,11 @@ async def replay_run(
             "approval": original["approval"],
         }
 
-    # Sandbox replay: create a new run with same agent definition
+    # Sandbox replay
     from ..models import AgentDefinition, RunContext, EnvironmentConfig
     agent_def = AgentDefinition(**original["agent_definition"])
     run_ctx = RunContext(**original.get("run_context", {}))
 
-    # Apply environment overrides
     if req.environment_overrides:
         env_data = run_ctx.environment.model_dump()
         for key, val in req.environment_overrides.items():
@@ -289,6 +415,16 @@ async def replay_run(
     run_data["workspace_id"] = auth.workspace_id
     run_data["initial_snapshot"] = env.to_snapshot()
     store.save(run_data)
+
+    # Audit log
+    AuditLogger(db).log(
+        workspace_id=auth.workspace_id,
+        event_type=EVENT_RUN_REPLAYED,
+        actor=auth.api_key_name or "default",
+        resource_type="run",
+        resource_id=new_run.id,
+        details={"replayed_from": run_id, "target": req.target},
+    )
 
     asyncio.create_task(_execute_run(new_run, store, auth.workspace_id, env))
 

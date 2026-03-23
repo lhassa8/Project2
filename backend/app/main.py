@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import init_db
-from .routers import analytics, mcp, policies, runs, templates, workspaces
+from .routers import analytics, audit, mcp, policies, runs, templates, webhooks, workspaces
 
 app = FastAPI(
     title="AgentSandbox",
@@ -12,7 +12,8 @@ app = FastAPI(
         "Enterprise simulation layer for previewing, debugging, and approving "
         "autonomous Claude agent actions before granting real-system access. "
         "Features stateful sandbox environments, MCP-compatible server, "
-        "workspace-scoped auth, run comparison, and approval-gated replay."
+        "workspace-scoped auth, run comparison, approval-gated replay, "
+        "audit logging, webhook notifications, and configurable policies."
     ),
     version="1.0.0",
 )
@@ -31,6 +32,8 @@ app.include_router(analytics.router)
 app.include_router(policies.router)
 app.include_router(workspaces.router)
 app.include_router(mcp.router)
+app.include_router(audit.router)
+app.include_router(webhooks.router)
 
 
 @app.on_event("startup")

@@ -6,6 +6,8 @@ import Dashboard from './components/Dashboard';
 import TemplateLibrary from './components/TemplateLibrary';
 import PoliciesView from './components/PoliciesView';
 import RunComparisonView from './components/RunComparison';
+import AuditLog from './components/AuditLog';
+import WebhooksView from './components/WebhooksView';
 
 type View =
   | { page: 'dashboard' }
@@ -14,7 +16,9 @@ type View =
   | { page: 'new'; templateId?: string }
   | { page: 'templates' }
   | { page: 'policies' }
-  | { page: 'compare'; initialRunA?: string };
+  | { page: 'compare'; initialRunA?: string }
+  | { page: 'audit' }
+  | { page: 'webhooks' };
 
 const NAV_ITEMS: { page: View['page']; label: string }[] = [
   { page: 'dashboard', label: 'Dashboard' },
@@ -22,6 +26,8 @@ const NAV_ITEMS: { page: View['page']; label: string }[] = [
   { page: 'templates', label: 'Templates' },
   { page: 'compare', label: 'Compare' },
   { page: 'policies', label: 'Policies' },
+  { page: 'audit', label: 'Audit' },
+  { page: 'webhooks', label: 'Webhooks' },
 ];
 
 export default function App() {
@@ -45,12 +51,12 @@ export default function App() {
               </div>
             </button>
 
-            <nav className="flex items-center gap-1 ml-2">
+            <nav className="flex items-center gap-0.5 ml-2">
               {NAV_ITEMS.map(({ page, label }) => (
                 <button
                   key={page}
                   onClick={() => setView({ page } as View)}
-                  className={`px-3 py-4 text-sm font-medium border-b-2 transition-colors ${
+                  className={`px-2.5 py-4 text-sm font-medium border-b-2 transition-colors ${
                     view.page === page
                       ? 'border-indigo-600 text-indigo-600'
                       : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
@@ -108,6 +114,8 @@ export default function App() {
           />
         )}
         {view.page === 'policies' && <PoliciesView />}
+        {view.page === 'audit' && <AuditLog />}
+        {view.page === 'webhooks' && <WebhooksView />}
       </main>
     </div>
   );
