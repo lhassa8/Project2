@@ -21,8 +21,18 @@ from ..services.sandbox_environment import SandboxEnvironment
 
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 
+
+class _MCPSessionEntry:
+    """In-memory session state including workspace context."""
+    __slots__ = ("session", "workspace_id")
+
+    def __init__(self, session: MCPSession, workspace_id: str):
+        self.session = session
+        self.workspace_id = workspace_id
+
+
 # Active MCP sessions (keyed by run_id)
-_sessions: dict[str, MCPSession] = {}
+_sessions: dict[str, _MCPSessionEntry] = {}
 
 
 class MCPSessionRequest(BaseModel):
@@ -30,6 +40,17 @@ class MCPSessionRequest(BaseModel):
     name: str = "MCP Agent"
     goal: str = "Autonomous agent connected via MCP"
     environment: dict | None = None
+
+
+def _save_session(entry: _MCPSessionEntry, db_session: Session) -> None:
+    """Persist current MCP session state to the database with workspace_id."""
+    store = RunStore(db_session)
+    run_data = entry.session.run.model_dump(mode="json")
+    run_data["workspace_id"] = entry.workspace_id
+    run_data["initial_snapshot"] = entry.session.initial_snapshot
+    run_data["final_snapshot"] = entry.session.env.to_snapshot()
+    run_data["policy_violations"] = entry.session.policy_violations
+    store.save(run_data)
 
 
 @router.post("/sessions", status_code=201)
@@ -45,13 +66,10 @@ async def create_mcp_session(
     )
     env = SandboxEnvironment(req.environment) if req.environment else None
     session = MCPSession(run, environment=env)
-    _sessions[run.id] = session
+    entry = _MCPSessionEntry(session, auth.workspace_id)
+    _sessions[run.id] = entry
 
-    store = RunStore(db)
-    run_data = run.model_dump(mode="json")
-    run_data["workspace_id"] = auth.workspace_id
-    run_data["initial_snapshot"] = session.initial_snapshot
-    store.save(run_data)
+    _save_session(entry, db)
 
     return {
         "session_id": session.session_id,
@@ -68,18 +86,12 @@ async def mcp_message(
     db: Session = Depends(get_db),
 ) -> dict:
     """Handle an MCP JSON-RPC message via HTTP POST."""
-    session = _sessions.get(run_id)
-    if session is None:
+    entry = _sessions.get(run_id)
+    if entry is None:
         raise HTTPException(status_code=404, detail="MCP session not found")
 
-    response = session.handle_message(message)
-
-    # Persist updated run state
-    store = RunStore(db)
-    run_data = session.run.model_dump(mode="json")
-    run_data["initial_snapshot"] = session.initial_snapshot
-    run_data["final_snapshot"] = session.env.to_snapshot()
-    store.save(run_data)
+    response = entry.session.handle_message(message)
+    _save_session(entry, db)
 
     return response
 
@@ -87,8 +99,8 @@ async def mcp_message(
 @router.websocket("/sessions/{run_id}/ws")
 async def mcp_websocket(websocket: WebSocket, run_id: str):
     """Handle an MCP session over WebSocket (primary transport)."""
-    session = _sessions.get(run_id)
-    if session is None:
+    entry = _sessions.get(run_id)
+    if entry is None:
         await websocket.close(code=4004, reason="MCP session not found")
         return
 
@@ -107,25 +119,26 @@ async def mcp_websocket(websocket: WebSocket, run_id: str):
                 })
                 continue
 
-            response = session.handle_message(message)
-            if response:  # Skip empty responses (notifications)
+            response = entry.session.handle_message(message)
+            if response:
                 await websocket.send_json(response)
     except WebSocketDisconnect:
         pass
     finally:
-        # Finalize the session — compute risk report and save
-        session.run.status = "complete"
-        risk_report = session.get_risk_report()
+        # Finalize the session
+        entry.session.run.status = "complete"
+        risk_report = entry.session.get_risk_report()
 
         from ..database import SessionLocal
         db = SessionLocal()
         try:
             store = RunStore(db)
-            run_data = session.run.model_dump(mode="json")
+            run_data = entry.session.run.model_dump(mode="json")
+            run_data["workspace_id"] = entry.workspace_id
             run_data["risk_report"] = risk_report
-            run_data["policy_violations"] = session.policy_violations
-            run_data["initial_snapshot"] = session.initial_snapshot
-            run_data["final_snapshot"] = session.env.to_snapshot()
+            run_data["policy_violations"] = entry.session.policy_violations
+            run_data["initial_snapshot"] = entry.session.initial_snapshot
+            run_data["final_snapshot"] = entry.session.env.to_snapshot()
             store.save(run_data)
         finally:
             db.close()
@@ -134,17 +147,17 @@ async def mcp_websocket(websocket: WebSocket, run_id: str):
 @router.get("/sessions/{run_id}")
 async def get_mcp_session(run_id: str) -> dict:
     """Get status of an MCP session."""
-    session = _sessions.get(run_id)
-    if session is None:
+    entry = _sessions.get(run_id)
+    if entry is None:
         raise HTTPException(status_code=404, detail="MCP session not found")
 
     return {
-        "session_id": session.session_id,
+        "session_id": entry.session.session_id,
         "run_id": run_id,
-        "initialized": session.initialized,
-        "action_count": len(session.run.actions),
-        "policy_violations": session.policy_violations,
-        "status": session.run.status,
+        "initialized": entry.session.initialized,
+        "action_count": len(entry.session.run.actions),
+        "policy_violations": entry.session.policy_violations,
+        "status": entry.session.run.status,
     }
 
 
@@ -154,28 +167,27 @@ async def finalize_mcp_session(
     db: Session = Depends(get_db),
 ) -> dict:
     """Explicitly finalize an MCP session and compute risk report."""
-    session = _sessions.get(run_id)
-    if session is None:
+    entry = _sessions.get(run_id)
+    if entry is None:
         raise HTTPException(status_code=404, detail="MCP session not found")
 
-    session.run.status = "complete"
-    risk_report = session.get_risk_report()
+    entry.session.run.status = "complete"
+    risk_report = entry.session.get_risk_report()
 
     store = RunStore(db)
-    run_data = session.run.model_dump(mode="json")
+    run_data = entry.session.run.model_dump(mode="json")
+    run_data["workspace_id"] = entry.workspace_id
     run_data["risk_report"] = risk_report
-    run_data["policy_violations"] = session.policy_violations
-    run_data["initial_snapshot"] = session.initial_snapshot
-    run_data["final_snapshot"] = session.env.to_snapshot()
-    run_data["workspace_id"] = run_data.get("workspace_id")
+    run_data["policy_violations"] = entry.session.policy_violations
+    run_data["initial_snapshot"] = entry.session.initial_snapshot
+    run_data["final_snapshot"] = entry.session.env.to_snapshot()
     store.save(run_data)
 
-    # Clean up session
     del _sessions[run_id]
 
     return {
         "run_id": run_id,
         "status": "complete",
         "risk_report": risk_report,
-        "action_count": len(session.run.actions),
+        "action_count": len(entry.session.run.actions),
     }

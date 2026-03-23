@@ -68,6 +68,26 @@ async def _dispatch_webhooks(workspace_id: str, event_type: str, payload: dict) 
         pass  # Webhook failures should not block the run
 
 
+def _get_workspace_run(store: RunStore, run_id: str, workspace_id: str) -> dict:
+    """Fetch a run and verify it belongs to the given workspace."""
+    run_data = store.get(run_id)
+    if run_data is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run_data.get("workspace_id") and run_data["workspace_id"] != workspace_id:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return run_data
+
+
+def _build_environment(env_config: dict) -> SandboxEnvironment:
+    """Build a SandboxEnvironment, always passing the config through."""
+    has_data = (
+        env_config.get("filesystem")
+        or env_config.get("database")
+        or env_config.get("http_stubs")
+    )
+    return SandboxEnvironment(env_config if has_data else None)
+
+
 # ── REST endpoints ───────────────────────────────────────────────────────────
 
 @router.post("", status_code=201)
@@ -83,17 +103,14 @@ async def create_run(
     )
     store = RunStore(db)
 
-    # Build environment from config
     env_config = req.run_context.environment.model_dump()
-    env = SandboxEnvironment(env_config if env_config.get("filesystem") or env_config.get("database") or env_config.get("http_stubs") else None)
+    env = _build_environment(env_config)
 
-    # Save initial state with workspace scoping
     run_data = run.model_dump(mode="json")
     run_data["workspace_id"] = auth.workspace_id
     run_data["initial_snapshot"] = env.to_snapshot()
     store.save(run_data)
 
-    # Audit log
     AuditLogger(db).log(
         workspace_id=auth.workspace_id,
         event_type=EVENT_RUN_CREATED,
@@ -103,9 +120,7 @@ async def create_run(
         details={"agent_name": req.agent_definition.name, "goal": req.agent_definition.goal[:200]},
     )
 
-    # Run the agent in the background
     asyncio.create_task(_execute_run(run, store, auth.workspace_id, env))
-
     return {"id": run.id, "status": run.status}
 
 
@@ -128,7 +143,6 @@ async def _execute_run(
             elif event.get("type") == "policy_violation":
                 policy_violations.append(event["violation"])
                 await _broadcast(run.id, event)
-                # Dispatch webhook for policy violations
                 asyncio.create_task(_dispatch_webhooks(
                     workspace_id, "policy.violation",
                     {"run_id": run.id, "violation": event["violation"]},
@@ -150,7 +164,7 @@ async def _execute_run(
             run_data["final_snapshot"] = final_snapshot
         store.save(run_data)
 
-    # Final broadcast
+    # Final persist
     await _broadcast(run.id, {
         "type": "run_complete",
         "status": run.status,
@@ -166,7 +180,7 @@ async def _execute_run(
     run_data["final_snapshot"] = runner.env.to_snapshot()
     store.save(run_data)
 
-    # Audit log for completion
+    # Audit log
     from ..database import SessionLocal
     audit_db = SessionLocal()
     try:
@@ -186,7 +200,7 @@ async def _execute_run(
     finally:
         audit_db.close()
 
-    # Dispatch webhooks for completion
+    # Webhooks
     webhook_event = "run.completed" if run.status == "complete" else "run.failed"
     await _dispatch_webhooks(workspace_id, webhook_event, {
         "run_id": run.id,
@@ -194,8 +208,6 @@ async def _execute_run(
         "risk_report": risk_report,
         "action_count": len(run.actions),
     })
-
-    # Dispatch webhook for high/critical risk
     if risk_report:
         level = risk_report.get("risk_level", "")
         if level in ("critical", "high"):
@@ -235,12 +247,13 @@ def list_runs(
 
 
 @router.get("/{run_id}")
-def get_run(run_id: str, db: Session = Depends(get_db)) -> dict:
+def get_run(
+    run_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    db: Session = Depends(get_db),
+) -> dict:
     """Get a single sandbox run with full action timeline."""
-    run = RunStore(db).get(run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="Run not found")
-    return run
+    return _get_workspace_run(RunStore(db), run_id, auth.workspace_id)
 
 
 @router.post("/{run_id}/approve")
@@ -255,9 +268,8 @@ async def approve_run(
         raise HTTPException(status_code=403, detail="Insufficient permissions to approve runs")
 
     store = RunStore(db)
-    run_data = store.get(run_id)
-    if run_data is None:
-        raise HTTPException(status_code=404, detail="Run not found")
+    run_data = _get_workspace_run(store, run_id, auth.workspace_id)
+
     if run_data["status"] != "complete":
         raise HTTPException(status_code=400, detail="Can only approve completed runs")
 
@@ -271,7 +283,6 @@ async def approve_run(
     run_data["approval"] = record.model_dump(mode="json")
     store.save(run_data)
 
-    # Audit log
     event_type = EVENT_APPROVAL_APPROVED if req.decision == "approved" else (
         EVENT_APPROVAL_REJECTED if req.decision == "rejected" else EVENT_APPROVAL_SUBMITTED
     )
@@ -284,7 +295,6 @@ async def approve_run(
         details={"decision": req.decision, "notes": req.reviewer_notes[:200] if req.reviewer_notes else None},
     )
 
-    # Dispatch webhook
     await _dispatch_webhooks(auth.workspace_id, "approval.submitted", {
         "run_id": run_id,
         "decision": req.decision,
@@ -301,16 +311,20 @@ def export_run(
     db: Session = Depends(get_db),
 ) -> dict:
     """Export a full audit artifact for a run — suitable for compliance storage."""
-    run_data = RunStore(db).get(run_id)
-    if run_data is None:
-        raise HTTPException(status_code=404, detail="Run not found")
+    store = RunStore(db)
+    run_data = _get_workspace_run(store, run_id, auth.workspace_id)
 
-    risk_report = score_run(
-        run_data.get("actions", []),
-        run_data.get("diffs", []),
-    )
+    # Use stored risk report if available; recompute only as fallback
+    risk_report_data = run_data.get("risk_report")
+    if risk_report_data:
+        risk_report_dict = risk_report_data
+    else:
+        risk_report = score_run(
+            run_data.get("actions", []),
+            run_data.get("diffs", []),
+        )
+        risk_report_dict = risk_report.to_dict()
 
-    # Audit log
     AuditLogger(db).log(
         workspace_id=auth.workspace_id,
         event_type=EVENT_RUN_EXPORTED,
@@ -323,7 +337,7 @@ def export_run(
         "export_version": "2.0",
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "run": run_data,
-        "risk_report": risk_report.to_dict(),
+        "risk_report": risk_report_dict,
         "environment_snapshots": {
             "initial": run_data.get("initial_snapshot"),
             "final": run_data.get("final_snapshot"),
@@ -345,18 +359,13 @@ def export_run(
 @router.post("/compare")
 def compare(
     req: RunComparisonRequest,
+    auth: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ) -> dict:
     """Compare two sandbox runs side by side."""
     store = RunStore(db)
-    run_a = store.get(req.run_id_a)
-    run_b = store.get(req.run_id_b)
-
-    if run_a is None:
-        raise HTTPException(status_code=404, detail=f"Run {req.run_id_a} not found")
-    if run_b is None:
-        raise HTTPException(status_code=404, detail=f"Run {req.run_id_b} not found")
-
+    run_a = _get_workspace_run(store, req.run_id_a, auth.workspace_id)
+    run_b = _get_workspace_run(store, req.run_id_b, auth.workspace_id)
     return compare_runs(run_a, run_b)
 
 
@@ -369,23 +378,30 @@ async def replay_run(
     auth: AuthContext = Depends(get_auth_context),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Replay an approved run — re-execute the same agent with optional env overrides."""
+    """Replay a run — re-execute the same agent with optional env overrides."""
     store = RunStore(db)
-    original = store.get(run_id)
-    if original is None:
-        raise HTTPException(status_code=404, detail="Run not found")
+    original = _get_workspace_run(store, run_id, auth.workspace_id)
 
     if req.target == "live":
-        if not original.get("approval") or original["approval"].get("decision") != "approved":
+        # Live replay requires a valid, verified approval
+        approval_data = original.get("approval")
+        if not approval_data or approval_data.get("decision") != "approved":
             raise HTTPException(
                 status_code=400,
-                detail="Only approved runs can be replayed against live systems. This run is not approved.",
+                detail="Only approved runs can be replayed against live systems.",
+            )
+        # Verify the approval signature hasn't been tampered with
+        record = ApprovalRecord(**approval_data)
+        if not record.verify():
+            raise HTTPException(
+                status_code=400,
+                detail="Approval signature verification failed. The approval record may have been tampered with.",
             )
         return {
             "status": "queued",
             "message": "Live replay queued. Connect your execution backend to consume approved runs.",
             "original_run_id": run_id,
-            "approval": original["approval"],
+            "approval": approval_data,
         }
 
     # Sandbox replay
@@ -409,14 +425,13 @@ async def replay_run(
     )
 
     env_config = run_ctx.environment.model_dump()
-    env = SandboxEnvironment(env_config if env_config.get("filesystem") or env_config.get("database") or env_config.get("http_stubs") else None)
+    env = _build_environment(env_config)
 
     run_data = new_run.model_dump(mode="json")
     run_data["workspace_id"] = auth.workspace_id
     run_data["initial_snapshot"] = env.to_snapshot()
     store.save(run_data)
 
-    # Audit log
     AuditLogger(db).log(
         workspace_id=auth.workspace_id,
         event_type=EVENT_RUN_REPLAYED,

@@ -41,11 +41,32 @@ class AgentDefinition(BaseModel):
     temperature: float = 0.0
 
 
+MAX_ENV_FILES = 50
+MAX_ENV_FILE_SIZE = 100_000  # 100KB per file
+MAX_ENV_TABLES = 20
+MAX_ENV_ROWS_PER_TABLE = 500
+MAX_ENV_HTTP_STUBS = 50
+
+
 class EnvironmentConfig(BaseModel):
     """Configurable seed data for the sandbox environment."""
     filesystem: dict[str, str] = Field(default_factory=dict)
     database: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)
     http_stubs: list[dict[str, Any]] = Field(default_factory=list)
+
+    def model_post_init(self, __context: Any) -> None:
+        if len(self.filesystem) > MAX_ENV_FILES:
+            raise ValueError(f"Environment filesystem exceeds {MAX_ENV_FILES} files")
+        for path, content in self.filesystem.items():
+            if len(content) > MAX_ENV_FILE_SIZE:
+                raise ValueError(f"File {path} exceeds {MAX_ENV_FILE_SIZE} bytes")
+        if len(self.database) > MAX_ENV_TABLES:
+            raise ValueError(f"Environment database exceeds {MAX_ENV_TABLES} tables")
+        for table, rows in self.database.items():
+            if len(rows) > MAX_ENV_ROWS_PER_TABLE:
+                raise ValueError(f"Table {table} exceeds {MAX_ENV_ROWS_PER_TABLE} rows")
+        if len(self.http_stubs) > MAX_ENV_HTTP_STUBS:
+            raise ValueError(f"Environment http_stubs exceeds {MAX_ENV_HTTP_STUBS} stubs")
 
 
 class RunContext(BaseModel):
@@ -75,7 +96,8 @@ class StateDiff(BaseModel):
 
 # ── Approval ────────────────────────────────────────────────────────────────
 
-APPROVAL_SECRET = "agent-sandbox-hmac-secret"
+import os as _os
+APPROVAL_SECRET = _os.environ.get("SANDBOX_APPROVAL_SECRET", "agent-sandbox-hmac-secret-change-me")
 
 
 class ApprovalRecord(BaseModel):
@@ -85,11 +107,22 @@ class ApprovalRecord(BaseModel):
     approved_at: datetime = Field(default_factory=_utcnow)
     signature: str = ""
 
+    def _payload(self) -> str:
+        return f"{self.run_id}:{self.decision}:{self.approved_at.isoformat()}"
+
     def sign(self) -> None:
-        payload = f"{self.run_id}:{self.decision}:{self.approved_at.isoformat()}"
         self.signature = hmac.new(
-            APPROVAL_SECRET.encode(), payload.encode(), hashlib.sha256
+            APPROVAL_SECRET.encode(), self._payload().encode(), hashlib.sha256
         ).hexdigest()
+
+    def verify(self) -> bool:
+        """Verify the HMAC signature matches the current payload."""
+        if not self.signature:
+            return False
+        expected = hmac.new(
+            APPROVAL_SECRET.encode(), self._payload().encode(), hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(self.signature, expected)
 
 
 # ── Sandbox run ─────────────────────────────────────────────────────────────

@@ -18,8 +18,14 @@ import anthropic
 from ..models import AgentAction, AgentDefinition, RunContext, SandboxRun, StateDiff
 from .mock_tools import TOOL_SCHEMAS
 from .policy_engine import PolicyEngine
-from .risk_engine import score_action, score_run
+from .risk_engine import score_run
 from .sandbox_environment import SandboxEnvironment
+
+
+# Build a lookup of required args per tool from TOOL_SCHEMAS
+_TOOL_REQUIRED_ARGS: dict[str, list[str]] = {}
+for _schema in TOOL_SCHEMAS:
+    _TOOL_REQUIRED_ARGS[_schema["name"]] = _schema.get("input_schema", {}).get("required", [])
 
 
 def _now() -> datetime:
@@ -169,11 +175,16 @@ class SandboxRunner:
                             self.policy_violations.append(v.to_dict())
                             yield {"type": "policy_violation", "violation": v.to_dict()}
 
-                        if self.policy_engine.has_blockers(violations):
-                            blocker = next(
-                                v for v in violations
-                                if v.policy_action.value == "block"
-                            )
+                        # Check for blocking violations (BLOCK or REQUIRE_APPROVAL)
+                        blocker = next(
+                            (v for v in violations if v.policy_action.value == "block"),
+                            None,
+                        )
+                        approval_required = next(
+                            (v for v in violations if v.policy_action.value == "require_approval"),
+                            None,
+                        )
+                        if blocker:
                             self.run.status = "failed"
                             self.run.error = f"Policy blocked: {blocker.description}"
                             action = self._add_action(
@@ -182,6 +193,33 @@ class SandboxRunner:
                             )
                             yield action
                             return
+                        if approval_required:
+                            self.run.status = "failed"
+                            self.run.error = f"Human approval required: {approval_required.description}"
+                            action = self._add_action(
+                                "final_output",
+                                {"error": self.run.error, "policy_violation": approval_required.to_dict(), "requires_approval": True},
+                            )
+                            yield action
+                            return
+
+                    # Validate required arguments
+                    required = _TOOL_REQUIRED_ARGS.get(tool_name, [])
+                    missing = [arg for arg in required if arg not in tool_args]
+                    if missing:
+                        # Return an error to the agent instead of silently proceeding
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_block.id,
+                            "content": json.dumps({"error": f"Missing required arguments: {missing}"}),
+                            "is_error": True,
+                        })
+                        self._add_action(
+                            "tool_response",
+                            {"tool": tool_name, "result": {"error": f"Missing required arguments: {missing}"}},
+                            mock_system=tool_name.split("_")[0] if "_" in tool_name else tool_name,
+                        )
+                        continue
 
                     # Record the tool call
                     call_action = self._add_action(

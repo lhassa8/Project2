@@ -117,9 +117,12 @@ class MCPSession:
         if violations:
             for v in violations:
                 self.policy_violations.append(v.to_dict())
-            if self.policy_engine.has_blockers(violations):
-                blocker = next(v for v in violations if v.policy_action.value == "block")
+            blocker = next((v for v in violations if v.policy_action.value == "block"), None)
+            if blocker:
                 return self._error(msg_id, -32000, f"Policy blocked: {blocker.description}")
+            approval_required = next((v for v in violations if v.policy_action.value == "require_approval"), None)
+            if approval_required:
+                return self._error(msg_id, -32001, f"Human approval required: {approval_required.description}")
 
         # Record action
         self.sequence += 1
