@@ -181,6 +181,18 @@ export async function getTemplateDetail(templateId: string): Promise<TemplateDet
   return res.json();
 }
 
+export async function quickRunTemplate(templateId: string): Promise<{ id: string; status: string; template: string }> {
+  const res = await authFetch(`/api/templates/${templateId}/quick-run`, { method: 'POST' });
+  return res.json();
+}
+
+// ── Seed demo data ────────────────────────────────────────────────────────
+
+export async function seedDemoData(): Promise<{ seeded: boolean; runs_created?: number; message?: string }> {
+  const res = await authFetch('/api/seed', { method: 'POST' });
+  return res.json();
+}
+
 // ── Analytics ──────────────────────────────────────────────────────────────
 
 export function useAnalytics() {

@@ -122,6 +122,7 @@ export default function App() {
             <Dashboard
               onViewRun={(id) => setView({ page: 'detail', runId: id })}
               onNewRun={() => setView({ page: 'new' })}
+              onViewTemplates={() => setView({ page: 'templates' })}
             />
           )}
           {view.page === 'history' && (
@@ -145,6 +146,7 @@ export default function App() {
           {view.page === 'templates' && (
             <TemplateLibrary
               onUseTemplate={(id) => setView({ page: 'new', templateId: id })}
+              onViewRun={(id) => setView({ page: 'detail', runId: id })}
             />
           )}
           {view.page === 'compare' && (

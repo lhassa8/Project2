@@ -1,9 +1,11 @@
 import { useAnalytics, useRuns } from '../hooks/useApi';
 import StatusBadge from './StatusBadge';
+import WelcomeGuide from './WelcomeGuide';
 
 interface Props {
   onViewRun: (id: string) => void;
   onNewRun: () => void;
+  onViewTemplates?: () => void;
 }
 
 const RISK_COLORS: Record<string, string> = {
@@ -13,12 +15,24 @@ const RISK_COLORS: Record<string, string> = {
   critical: 'bg-red-500',
 };
 
-export default function Dashboard({ onViewRun, onNewRun }: Props) {
-  const { data, loading } = useAnalytics();
-  const { runs } = useRuns();
+export default function Dashboard({ onViewRun, onNewRun, onViewTemplates }: Props) {
+  const { data, loading, refresh: refreshAnalytics } = useAnalytics();
+  const { runs, refresh: refreshRuns } = useRuns();
 
   if (loading || !data) {
     return <div className="text-center py-16 text-text-tertiary">Loading dashboard...</div>;
+  }
+
+  // Show welcome guide for new users with no runs
+  if (data.total_runs === 0 && runs.length === 0) {
+    return (
+      <WelcomeGuide
+        onViewRun={onViewRun}
+        onNewRun={onNewRun}
+        onViewTemplates={onViewTemplates || (() => {})}
+        onRefresh={() => { refreshAnalytics(); refreshRuns(); }}
+      />
+    );
   }
 
   const recentRuns = runs.slice(0, 5);

@@ -10,6 +10,102 @@ from __future__ import annotations
 from ..models import AgentDefinition, EnvironmentConfig, RunContext, ToolConfig
 
 TEMPLATES: dict[str, dict] = {
+    # ── Getting Started ────────────────────────────────────────────────
+    "hello-world-file": {
+        "name": "Hello World — File Operations",
+        "description": "A simple agent that reads a config file, writes a greeting, and creates a summary. Perfect for your first sandbox run.",
+        "category": "Getting Started",
+        "difficulty": "low",
+        "estimated_actions": 5,
+        "agent_definition": AgentDefinition(
+            name="Hello World Agent",
+            goal="Read /config/settings.json, write a personalized greeting to /output/hello.txt, then write a summary to /output/summary.md.",
+            tools=[
+                ToolConfig(name="read_file", enabled=True),
+                ToolConfig(name="write_file", enabled=True),
+                ToolConfig(name="query_database", enabled=False),
+                ToolConfig(name="http_request", enabled=False),
+                ToolConfig(name="send_email", enabled=False),
+            ],
+        ).model_dump(),
+        "run_context": RunContext(
+            user_persona="New User",
+            initial_state={},
+            environment=EnvironmentConfig(
+                filesystem={
+                    "/config/settings.json": '{"app_name": "AgentSandbox", "version": "1.0", "greeting": "Welcome aboard!"}',
+                },
+            ),
+        ).model_dump(),
+    },
+    "simple-db-query": {
+        "name": "Database Query — Product Lookup",
+        "description": "Agent queries a product database and writes a formatted report. Shows how database and file tools work together.",
+        "category": "Getting Started",
+        "difficulty": "low",
+        "estimated_actions": 4,
+        "agent_definition": AgentDefinition(
+            name="Product Lookup Agent",
+            goal="Query the products table for all items with price > 50, then write a markdown report to /reports/expensive-products.md.",
+            tools=[
+                ToolConfig(name="query_database", enabled=True),
+                ToolConfig(name="write_file", enabled=True),
+                ToolConfig(name="read_file", enabled=False),
+                ToolConfig(name="http_request", enabled=False),
+                ToolConfig(name="send_email", enabled=False),
+            ],
+        ).model_dump(),
+        "run_context": RunContext(
+            user_persona="Store Manager",
+            initial_state={},
+            environment=EnvironmentConfig(
+                database={
+                    "products": [
+                        {"id": 1, "name": "Wireless Mouse", "price": 29.99, "category": "Electronics", "in_stock": True},
+                        {"id": 2, "name": "Mechanical Keyboard", "price": 89.99, "category": "Electronics", "in_stock": True},
+                        {"id": 3, "name": "USB-C Hub", "price": 54.50, "category": "Accessories", "in_stock": False},
+                        {"id": 4, "name": "Monitor Stand", "price": 42.00, "category": "Furniture", "in_stock": True},
+                        {"id": 5, "name": "Standing Desk", "price": 349.00, "category": "Furniture", "in_stock": True},
+                    ],
+                },
+            ),
+        ).model_dump(),
+    },
+    "email-notification": {
+        "name": "Email Alert — Low Stock Warning",
+        "description": "Agent checks inventory levels and sends an alert email for items running low. Demonstrates email and database tools.",
+        "category": "Getting Started",
+        "difficulty": "low",
+        "estimated_actions": 4,
+        "agent_definition": AgentDefinition(
+            name="Stock Alert Agent",
+            goal="Check inventory for items with quantity below threshold of 10 units, then send a warning email to warehouse@example.com.",
+            tools=[
+                ToolConfig(name="query_database", enabled=True),
+                ToolConfig(name="send_email", enabled=True),
+                ToolConfig(name="read_file", enabled=False),
+                ToolConfig(name="write_file", enabled=False),
+                ToolConfig(name="http_request", enabled=False),
+            ],
+        ).model_dump(),
+        "run_context": RunContext(
+            user_persona="Inventory Manager",
+            initial_state={},
+            environment=EnvironmentConfig(
+                database={
+                    "inventory": [
+                        {"id": 1, "product_name": "Widget A", "quantity": 120, "reorder_threshold": 10, "supplier": "Acme Supplies"},
+                        {"id": 2, "product_name": "Widget B", "quantity": 7, "reorder_threshold": 10, "supplier": "Acme Supplies"},
+                        {"id": 3, "product_name": "Gadget X", "quantity": 3, "reorder_threshold": 10, "supplier": "TechParts Co"},
+                        {"id": 4, "product_name": "Gadget Y", "quantity": 45, "reorder_threshold": 10, "supplier": "TechParts Co"},
+                        {"id": 5, "product_name": "Connector Z", "quantity": 9, "reorder_threshold": 10, "supplier": "FastShip Ltd"},
+                        {"id": 6, "product_name": "Cable Pack", "quantity": 200, "reorder_threshold": 10, "supplier": "FastShip Ltd"},
+                    ],
+                },
+            ),
+        ).model_dump(),
+    },
+    # ── Enterprise Templates ───────────────────────────────────────────
     "crm-lead-enrichment": {
         "name": "CRM Lead Enrichment",
         "description": "Agent enriches new CRM leads by querying external APIs, updating database records, and sending notification emails to the sales team.",

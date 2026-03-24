@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .database import init_db
 from .middleware import ErrorHandlingMiddleware, RateLimitMiddleware, RequestLoggingMiddleware
-from .routers import analytics, audit, mcp, policies, runs, templates, webhooks, workspaces
+from .routers import analytics, audit, mcp, policies, runs, seed, templates, webhooks, workspaces
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +47,7 @@ app.include_router(workspaces.router)
 app.include_router(mcp.router)
 app.include_router(audit.router)
 app.include_router(webhooks.router)
+app.include_router(seed.router)
 
 
 @app.on_event("startup")
