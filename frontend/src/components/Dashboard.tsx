@@ -7,8 +7,8 @@ interface Props {
 }
 
 const RISK_COLORS: Record<string, string> = {
-  low: 'bg-green-500',
-  medium: 'bg-yellow-500',
+  low: 'bg-emerald-500',
+  medium: 'bg-amber-500',
   high: 'bg-orange-500',
   critical: 'bg-red-500',
 };
@@ -18,41 +18,36 @@ export default function Dashboard({ onViewRun, onNewRun }: Props) {
   const { runs } = useRuns();
 
   if (loading || !data) {
-    return <div className="text-center py-16 text-gray-400">Loading dashboard...</div>;
+    return <div className="text-center py-16 text-text-tertiary">Loading dashboard...</div>;
   }
 
   const recentRuns = runs.slice(0, 5);
 
   return (
-    <div className="space-y-6">
-      {/* Stats row */}
+    <div className="space-y-8">
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard label="Total Runs" value={data.total_runs} />
-        <StatCard
-          label="Avg Actions/Run"
-          value={data.avg_actions_per_run}
-        />
+        <StatCard label="Avg Actions" value={data.avg_actions_per_run} />
         <StatCard
           label="Approval Rate"
           value={
             data.total_runs > 0
               ? `${Math.round(((data.approval_breakdown.approved ?? 0) / Math.max(1, data.total_runs)) * 100)}%`
-              : '—'
+              : '-'
           }
         />
         <StatCard
-          label="High Risk Runs"
+          label="High Risk"
           value={(data.risk_distribution.high ?? 0) + (data.risk_distribution.critical ?? 0)}
           alert={(data.risk_distribution.high ?? 0) + (data.risk_distribution.critical ?? 0) > 0}
         />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Risk distribution */}
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">Risk Distribution</h3>
+        <div className="bg-white rounded-lg border border-border p-5">
+          <h3 className="text-[13px] font-medium text-text-primary mb-4">Risk Distribution</h3>
           {Object.keys(data.risk_distribution).length === 0 ? (
-            <p className="text-sm text-gray-400">No completed runs yet</p>
+            <p className="text-xs text-text-tertiary">No completed runs yet</p>
           ) : (
             <div className="space-y-3">
               {['low', 'medium', 'high', 'critical'].map(level => {
@@ -62,12 +57,12 @@ export default function Dashboard({ onViewRun, onNewRun }: Props) {
                 return (
                   <div key={level}>
                     <div className="flex justify-between text-xs mb-1">
-                      <span className="capitalize text-gray-600">{level}</span>
-                      <span className="text-gray-400">{count} runs</span>
+                      <span className="capitalize text-text-secondary">{level}</span>
+                      <span className="text-text-tertiary">{count}</span>
                     </div>
-                    <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                    <div className="h-1.5 bg-surface-secondary rounded-full overflow-hidden">
                       <div
-                        className={`h-full rounded-full transition-all ${RISK_COLORS[level]}`}
+                        className={`h-full rounded-full ${RISK_COLORS[level]}`}
                         style={{ width: `${Math.max(pct, count > 0 ? 4 : 0)}%` }}
                       />
                     </div>
@@ -78,25 +73,24 @@ export default function Dashboard({ onViewRun, onNewRun }: Props) {
           )}
         </div>
 
-        {/* Tool usage */}
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">Tool Usage</h3>
+        <div className="bg-white rounded-lg border border-border p-5">
+          <h3 className="text-[13px] font-medium text-text-primary mb-4">Tool Usage</h3>
           {Object.keys(data.tool_usage).length === 0 ? (
-            <p className="text-sm text-gray-400">No tool calls recorded</p>
+            <p className="text-xs text-text-tertiary">No tool calls recorded</p>
           ) : (
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               {Object.entries(data.tool_usage).map(([tool, count]) => {
                 const maxCount = Math.max(...Object.values(data.tool_usage));
                 return (
                   <div key={tool} className="flex items-center gap-3">
-                    <code className="text-xs text-gray-600 w-28 truncate">{tool}</code>
-                    <div className="flex-1 h-5 bg-gray-100 rounded-full overflow-hidden">
+                    <code className="text-xs text-text-secondary w-28 truncate">{tool}</code>
+                    <div className="flex-1 h-1.5 bg-surface-secondary rounded-full overflow-hidden">
                       <div
-                        className="h-full bg-indigo-400 rounded-full transition-all"
+                        className="h-full bg-accent/60 rounded-full"
                         style={{ width: `${(count / maxCount) * 100}%` }}
                       />
                     </div>
-                    <span className="text-xs text-gray-400 w-8 text-right">{count}</span>
+                    <span className="text-xs text-text-tertiary w-8 text-right">{count}</span>
                   </div>
                 );
               })}
@@ -104,29 +98,29 @@ export default function Dashboard({ onViewRun, onNewRun }: Props) {
           )}
         </div>
 
-        {/* Status breakdown */}
-        <div className="bg-white rounded-xl border border-gray-200 p-5">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">Run Status</h3>
-          <div className="space-y-3">
+        <div className="bg-white rounded-lg border border-border p-5">
+          <h3 className="text-[13px] font-medium text-text-primary mb-4">Run Status</h3>
+          <div className="space-y-2.5">
             {Object.entries(data.status_breakdown).map(([status, count]) => (
               <div key={status} className="flex items-center justify-between">
                 <StatusBadge status={status} />
-                <span className="text-sm font-medium text-gray-700">{count}</span>
+                <span className="text-sm font-medium text-text-primary">{count}</span>
               </div>
             ))}
             {Object.keys(data.status_breakdown).length === 0 && (
-              <p className="text-sm text-gray-400">No runs yet</p>
+              <p className="text-xs text-text-tertiary">No runs yet</p>
             )}
           </div>
 
           {data.top_agents.length > 0 && (
             <>
-              <h3 className="text-sm font-semibold text-gray-700 mt-6 mb-3">Top Agents</h3>
+              <div className="border-t border-border my-4" />
+              <h3 className="text-[13px] font-medium text-text-primary mb-3">Top Agents</h3>
               <div className="space-y-2">
                 {data.top_agents.slice(0, 5).map(a => (
-                  <div key={a.name} className="flex justify-between text-sm">
-                    <span className="text-gray-600 truncate">{a.name}</span>
-                    <span className="text-gray-400">{a.run_count} runs</span>
+                  <div key={a.name} className="flex justify-between text-xs">
+                    <span className="text-text-secondary truncate">{a.name}</span>
+                    <span className="text-text-tertiary">{a.run_count}</span>
                   </div>
                 ))}
               </div>
@@ -135,42 +129,41 @@ export default function Dashboard({ onViewRun, onNewRun }: Props) {
         </div>
       </div>
 
-      {/* Recent runs */}
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
+      <div className="bg-white rounded-lg border border-border p-5">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-semibold text-gray-700">Recent Runs</h3>
+          <h3 className="text-[13px] font-medium text-text-primary">Recent Runs</h3>
           {recentRuns.length === 0 && (
-            <button onClick={onNewRun} className="text-sm text-indigo-600 hover:text-indigo-800">
+            <button onClick={onNewRun} className="text-[13px] text-accent hover:text-accent-dark">
               Create first run
             </button>
           )}
         </div>
         {recentRuns.length === 0 ? (
           <div className="text-center py-8">
-            <p className="text-gray-400 text-sm">No runs yet. Start by creating a new sandbox run.</p>
+            <p className="text-text-tertiary text-sm">No runs yet. Create a new sandbox run to get started.</p>
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-1">
             {recentRuns.map(run => (
               <button
                 key={run.id}
                 onClick={() => onViewRun(run.id)}
-                className="w-full text-left flex items-center justify-between py-2.5 px-3 rounded-lg hover:bg-gray-50 transition-colors"
+                className="w-full text-left flex items-center justify-between py-2.5 px-3 rounded-md hover:bg-surface-secondary transition-colors"
               >
                 <div className="flex items-center gap-3">
                   <StatusBadge status={run.status} />
-                  <span className="text-sm font-medium text-gray-800">{run.agent_definition.name}</span>
-                  <span className="text-xs text-gray-400 font-mono">{run.id}</span>
+                  <span className="text-[13px] font-medium text-text-primary">{run.agent_definition.name}</span>
+                  <span className="text-xs text-text-tertiary font-mono">{run.id}</span>
                 </div>
-                <div className="flex items-center gap-3 text-xs text-gray-400">
+                <div className="flex items-center gap-3 text-xs text-text-tertiary">
                   {run.risk_report && (
-                    <span className={`px-2 py-0.5 rounded-full font-medium ${
-                      run.risk_report.risk_level === 'critical' ? 'bg-red-100 text-red-700' :
-                      run.risk_report.risk_level === 'high' ? 'bg-orange-100 text-orange-700' :
-                      run.risk_report.risk_level === 'medium' ? 'bg-yellow-100 text-yellow-700' :
-                      'bg-green-100 text-green-700'
+                    <span className={`px-1.5 py-0.5 rounded text-[11px] font-medium ${
+                      run.risk_report.risk_level === 'critical' ? 'bg-red-50 text-red-600' :
+                      run.risk_report.risk_level === 'high' ? 'bg-orange-50 text-orange-600' :
+                      run.risk_report.risk_level === 'medium' ? 'bg-amber-50 text-amber-600' :
+                      'bg-emerald-50 text-emerald-600'
                     }`}>
-                      {run.risk_report.risk_level} risk
+                      {run.risk_report.risk_level}
                     </span>
                   )}
                   <span>{run.actions.length} actions</span>
@@ -187,9 +180,9 @@ export default function Dashboard({ onViewRun, onNewRun }: Props) {
 
 function StatCard({ label, value, alert }: { label: string; value: number | string; alert?: boolean }) {
   return (
-    <div className={`bg-white rounded-xl border p-5 ${alert ? 'border-red-200' : 'border-gray-200'}`}>
-      <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</div>
-      <div className={`text-2xl font-bold mt-1 ${alert ? 'text-red-600' : 'text-gray-900'}`}>
+    <div className={`bg-white rounded-lg border p-5 ${alert ? 'border-red-200' : 'border-border'}`}>
+      <div className="text-xs text-text-tertiary">{label}</div>
+      <div className={`text-2xl font-semibold mt-1 ${alert ? 'text-red-600' : 'text-text-primary'}`}>
         {value}
       </div>
     </div>
