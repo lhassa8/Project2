@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import RunHistory from './components/RunHistory';
 import RunDetail from './components/RunDetail';
 import NewRunForm from './components/NewRunForm';
@@ -8,6 +8,7 @@ import PoliciesView from './components/PoliciesView';
 import RunComparisonView from './components/RunComparison';
 import AuditLog from './components/AuditLog';
 import WebhooksView from './components/WebhooksView';
+import ErrorBoundary from './components/ErrorBoundary';
 
 type View =
   | { page: 'dashboard' }
@@ -30,8 +31,54 @@ const NAV_ITEMS: { page: View['page']; label: string }[] = [
   { page: 'webhooks', label: 'Webhooks' },
 ];
 
+// ── URL ↔ View mapping ─────────────────────────────────────────────────────
+
+function viewToPath(view: View): string {
+  switch (view.page) {
+    case 'dashboard': return '/';
+    case 'history': return '/runs';
+    case 'detail': return `/runs/${view.runId}`;
+    case 'new': return view.templateId ? `/new?template=${view.templateId}` : '/new';
+    case 'templates': return '/templates';
+    case 'policies': return '/policies';
+    case 'compare': return view.initialRunA ? `/compare?run=${view.initialRunA}` : '/compare';
+    case 'audit': return '/audit';
+    case 'webhooks': return '/webhooks';
+  }
+}
+
+function pathToView(path: string, search: string): View {
+  const params = new URLSearchParams(search);
+  if (path === '/' || path === '') return { page: 'dashboard' };
+  if (path === '/runs') return { page: 'history' };
+  if (path.startsWith('/runs/')) return { page: 'detail', runId: path.slice(6) };
+  if (path === '/new') return { page: 'new', templateId: params.get('template') || undefined };
+  if (path === '/templates') return { page: 'templates' };
+  if (path === '/policies') return { page: 'policies' };
+  if (path === '/compare') return { page: 'compare', initialRunA: params.get('run') || undefined };
+  if (path === '/audit') return { page: 'audit' };
+  if (path === '/webhooks') return { page: 'webhooks' };
+  return { page: 'dashboard' };
+}
+
 export default function App() {
-  const [view, setView] = useState<View>({ page: 'dashboard' });
+  const [view, setViewState] = useState<View>(() =>
+    pathToView(window.location.pathname, window.location.search)
+  );
+
+  const setView = useCallback((v: View) => {
+    setViewState(v);
+    const path = viewToPath(v);
+    window.history.pushState(null, '', path);
+  }, []);
+
+  useEffect(() => {
+    const onPop = () => {
+      setViewState(pathToView(window.location.pathname, window.location.search));
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -78,44 +125,46 @@ export default function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-6">
-        {view.page === 'dashboard' && (
-          <Dashboard
-            onViewRun={(id) => setView({ page: 'detail', runId: id })}
-            onNewRun={() => setView({ page: 'new' })}
-          />
-        )}
-        {view.page === 'history' && (
-          <RunHistory onSelect={(id) => setView({ page: 'detail', runId: id })} />
-        )}
-        {view.page === 'detail' && (
-          <RunDetail
-            runId={view.runId}
-            onBack={() => setView({ page: 'history' })}
-            onViewRun={(id) => setView({ page: 'detail', runId: id })}
-            onCompare={(id) => setView({ page: 'compare', initialRunA: id })}
-          />
-        )}
-        {view.page === 'new' && (
-          <NewRunForm
-            templateId={view.templateId}
-            onCreated={(id) => setView({ page: 'detail', runId: id })}
-            onCancel={() => setView({ page: 'history' })}
-          />
-        )}
-        {view.page === 'templates' && (
-          <TemplateLibrary
-            onUseTemplate={(id) => setView({ page: 'new', templateId: id })}
-          />
-        )}
-        {view.page === 'compare' && (
-          <RunComparisonView
-            initialRunA={view.initialRunA}
-            onViewRun={(id) => setView({ page: 'detail', runId: id })}
-          />
-        )}
-        {view.page === 'policies' && <PoliciesView />}
-        {view.page === 'audit' && <AuditLog />}
-        {view.page === 'webhooks' && <WebhooksView />}
+        <ErrorBoundary>
+          {view.page === 'dashboard' && (
+            <Dashboard
+              onViewRun={(id) => setView({ page: 'detail', runId: id })}
+              onNewRun={() => setView({ page: 'new' })}
+            />
+          )}
+          {view.page === 'history' && (
+            <RunHistory onSelect={(id) => setView({ page: 'detail', runId: id })} />
+          )}
+          {view.page === 'detail' && (
+            <RunDetail
+              runId={view.runId}
+              onBack={() => setView({ page: 'history' })}
+              onViewRun={(id) => setView({ page: 'detail', runId: id })}
+              onCompare={(id) => setView({ page: 'compare', initialRunA: id })}
+            />
+          )}
+          {view.page === 'new' && (
+            <NewRunForm
+              templateId={view.templateId}
+              onCreated={(id) => setView({ page: 'detail', runId: id })}
+              onCancel={() => setView({ page: 'history' })}
+            />
+          )}
+          {view.page === 'templates' && (
+            <TemplateLibrary
+              onUseTemplate={(id) => setView({ page: 'new', templateId: id })}
+            />
+          )}
+          {view.page === 'compare' && (
+            <RunComparisonView
+              initialRunA={view.initialRunA}
+              onViewRun={(id) => setView({ page: 'detail', runId: id })}
+            />
+          )}
+          {view.page === 'policies' && <PoliciesView />}
+          {view.page === 'audit' && <AuditLog />}
+          {view.page === 'webhooks' && <WebhooksView />}
+        </ErrorBoundary>
       </main>
     </div>
   );

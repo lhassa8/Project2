@@ -1,10 +1,19 @@
 """AgentSandbox — FastAPI application entry point."""
 
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .database import init_db
+from .middleware import ErrorHandlingMiddleware, RateLimitMiddleware, RequestLoggingMiddleware
 from .routers import analytics, audit, mcp, policies, runs, templates, webhooks, workspaces
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 app = FastAPI(
     title="AgentSandbox",
@@ -18,6 +27,10 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# Middleware stack (order matters — outermost runs first)
+app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(ErrorHandlingMiddleware)
+app.add_middleware(RateLimitMiddleware, read_limit=100, write_limit=30, window=60)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://localhost:3000"],
